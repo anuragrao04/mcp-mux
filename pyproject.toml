@@ -1,14 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "mcp-env-mux"
 version = "0.1.0"
 description = "Merge multiple instances of the same MCP server across environments into a single endpoint with a unified env parameter."
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    { name = "Anurag Rao", email = "raoanu2004@gmail.com" },
+]
+keywords = ["mcp", "proxy", "environment", "multiplexer", "ai", "tools"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = [
     "fastmcp>=2.0.0",
 ]
 
 [project.scripts]
 mcp-env-mux = "mcp_env_mux.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/anuragrao04/mcp-mux"
+Repository = "https://github.com/anuragrao04/mcp-mux"
+Issues = "https://github.com/anuragrao04/mcp-mux/issues"
 
 [dependency-groups]
 dev = [
@@ -22,3 +47,6 @@ dev = [
 asyncio_mode = "auto"
 timeout = 30
 testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_env_mux"]
