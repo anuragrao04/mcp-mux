@@ -1,0 +1,18 @@
+{
+  "environments": {
+    "Main Prod": {
+      "description": "RSL (Razorpay Software Limited) Coralogix team",
+      "url": "https://api.coralogix.in/mgmt/api/v1/mcp",
+      "headers": {
+        "Authorization": "$CORALOGIX_PROD_API_KEY"
+      }
+    },
+    "RZPX Prod": {
+      "description": "RZPX (Banking stuff, Razorpay X Software Limited) Coralogix team",
+      "url": "https://api.coralogix.in/mgmt/api/v1/mcp",
+      "headers": {
+        "Authorization": "$CORALOGIX_RZPX_PROD_API_KEY"
+      }
+    }
+  }
+}
