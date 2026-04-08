@@ -7,6 +7,7 @@ from typing import Any, Callable
 from fastmcp import FastMCP
 from fastmcp.tools.function_tool import FunctionTool
 
+from mcp_env_mux.config import AuthConfig
 from mcp_env_mux.merge import MergedTool
 
 
@@ -44,9 +45,43 @@ def _make_handler(tool: MergedTool, clients: dict[str, Any]) -> Callable:
 def create_proxy_server(
     merged_tools: list[MergedTool],
     clients: dict[str, Any],
+    auth_config: AuthConfig | None = None,
+    private_key: Any = None,
+    public_key: Any = None,
 ) -> FastMCP:
-    """Create a FastMCP server with tools registered for routing."""
-    server = FastMCP("mcp-env-mux")
+    """Create a FastMCP server with tools registered for routing.
+
+    When auth_config is provided, attaches JWT verification, OAuth routes,
+    token minting UI, and RBAC middleware. Otherwise creates a plain server
+    (backward-compatible with all existing tests).
+    """
+    if auth_config is not None and public_key is not None:
+        from fastmcp.server.auth.providers.jwt import JWTVerifier  # type: ignore[import]
+
+        from mcp_env_mux.auth.middleware import RBACMiddleware
+        from mcp_env_mux.auth.oauth import register_oauth_routes
+        from mcp_env_mux.auth.ui import register_ui_routes
+
+        # Build the public key in PEM format for JWTVerifier
+        from cryptography.hazmat.primitives import serialization
+
+        public_key_pem = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8")
+
+        auth = JWTVerifier(
+            public_key=public_key_pem,
+            issuer="mcp-env-mux",
+            audience="mcp-env-mux",
+        )
+        server = FastMCP("mcp-env-mux", auth=auth)
+
+        register_oauth_routes(server, auth_config, private_key)
+        register_ui_routes(server, auth_config, private_key, public_key)
+        server.add_middleware(RBACMiddleware(auth_config.roles))
+    else:
+        server = FastMCP("mcp-env-mux")
 
     for tool in merged_tools:
         handler = _make_handler(tool, clients)

@@ -16,6 +16,15 @@ from mcp_env_mux.proxy import create_proxy_server
 async def _run(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
 
+    # Auth setup (only when auth is configured)
+    private_key = None
+    public_key = None
+    if config.auth is not None:
+        from mcp_env_mux.auth.keys import get_public_key, load_or_generate_key
+
+        private_key = load_or_generate_key(config.auth.signing_key_file)
+        public_key = get_public_key(private_key)
+
     discovered = await discover_all(config)
 
     env_descriptions = {
@@ -51,7 +60,13 @@ async def _run(args: argparse.Namespace) -> int:
             await client.__aenter__()
             clients[env_name] = client
 
-        server = create_proxy_server(result.tools, clients)
+        server = create_proxy_server(
+            result.tools,
+            clients,
+            auth_config=config.auth,
+            private_key=private_key,
+            public_key=public_key,
+        )
         await server.run_http_async(host=args.host, port=args.port)
     finally:
         for client in clients.values():

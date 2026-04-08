@@ -17,8 +17,30 @@ class EnvironmentConfig:
 
 
 @dataclass
+class AzureConfig:
+    tenant_id: str
+    client_id: str
+    client_secret: str
+
+
+@dataclass
+class RoleConfig:
+    allowed_envs: dict[str, list[str]]  # env_pattern -> [tool_patterns]
+
+
+@dataclass
+class AuthConfig:
+    azure: AzureConfig
+    signing_key_file: str
+    roles: dict[str, RoleConfig]
+    token_minting_roles: list[str]
+    token_max_expiry_days: int = 180
+
+
+@dataclass
 class Config:
     environments: dict[str, EnvironmentConfig]
+    auth: AuthConfig | None = None  # None = auth disabled
 
 
 def resolve_env_vars(headers: dict[str, str]) -> dict[str, str]:
@@ -33,6 +55,66 @@ def resolve_env_vars(headers: dict[str, str]) -> dict[str, str]:
 
         result[key] = re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", replacer, value)
     return result
+
+
+def _resolve_string_env_vars(value: str) -> str:
+    """Replace $VAR patterns in a single string value with os.environ values."""
+    def replacer(match: re.Match) -> str:
+        var_name = match.group(1)
+        if var_name not in os.environ:
+            raise ValueError(f"Environment variable {var_name!r} is not set")
+        return os.environ[var_name]
+
+    return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", replacer, value)
+
+
+def _parse_auth_config(auth_raw: dict) -> AuthConfig:
+    """Parse and validate the auth block from config."""
+    azure_raw = auth_raw.get("azure")
+    if not azure_raw:
+        raise ValueError("auth.azure is required")
+
+    for field_name in ("tenant_id", "client_id", "client_secret"):
+        if field_name not in azure_raw:
+            raise ValueError(f"auth.azure.{field_name} is required")
+
+    azure = AzureConfig(
+        tenant_id=azure_raw["tenant_id"],
+        client_id=azure_raw["client_id"],
+        client_secret=_resolve_string_env_vars(azure_raw["client_secret"]),
+    )
+
+    signing_key_file = auth_raw.get("signing_key_file")
+    if not signing_key_file:
+        raise ValueError("auth.signing_key_file is required")
+
+    roles_raw = auth_raw.get("roles")
+    if not roles_raw:
+        raise ValueError("auth.roles is required")
+
+    roles: dict[str, RoleConfig] = {}
+    for role_name, role_data in roles_raw.items():
+        allowed_envs_raw = role_data.get("allowed_envs", {})
+        allowed_envs: dict[str, list[str]] = {}
+        for env_pattern, tool_patterns in allowed_envs_raw.items():
+            if not isinstance(tool_patterns, list):
+                raise ValueError(
+                    f"auth.roles.{role_name}.allowed_envs.{env_pattern} must be a list"
+                )
+            allowed_envs[env_pattern] = tool_patterns
+        roles[role_name] = RoleConfig(allowed_envs=allowed_envs)
+
+    token_minting_roles = auth_raw.get("token_minting_roles")
+    if token_minting_roles is None:
+        raise ValueError("auth.token_minting_roles is required")
+
+    return AuthConfig(
+        azure=azure,
+        signing_key_file=signing_key_file,
+        roles=roles,
+        token_minting_roles=token_minting_roles,
+        token_max_expiry_days=auth_raw.get("token_max_expiry_days", 180),
+    )
 
 
 def load_config(path: Path) -> Config:
@@ -63,4 +145,8 @@ def load_config(path: Path) -> Config:
             headers=headers,
         )
 
-    return Config(environments=environments)
+    auth: AuthConfig | None = None
+    if "auth" in raw:
+        auth = _parse_auth_config(raw["auth"])
+
+    return Config(environments=environments, auth=auth)
