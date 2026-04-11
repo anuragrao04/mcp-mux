@@ -16,6 +16,8 @@ mcp_env_mux is a proxy server that multiplexes multiple MCP backend environments
 
 **proxy.py** — Builds a `FastMCP` server from merged tools. Registers a handler per tool that extracts the `env` argument, strips env-specific parameters not supported by the target backend, and forwards the call to the correct client.
 
+**auth/** — Optional authentication and authorization package. When an `auth` block is present in the config, enables Azure AD OIDC login (OAuth 2.1 with PKCE), JWT-based request authentication, role-based access control per tool/environment, and a web UI for minting long-lived bot tokens. Contains: `keys.py` (RSA key management), `tokens.py` (JWT creation), `rbac.py` (permission logic), `middleware.py` (FastMCP RBAC middleware), `oauth.py` (OAuth 2.1 routes), `ui.py` (token minting UI).
+
 ## Data Flow
 
 ```

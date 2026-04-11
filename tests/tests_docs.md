@@ -14,6 +14,12 @@ The test suite validates the mcp-env-mux proxy at two levels: unit tests that ex
 
 **test_proxy.py** contains unit tests for `mcp_env_mux.proxy`. It tests call routing logic using mocked `fastmcp.Client` instances (no real servers). Coverage includes routing to the correct backend by `env` parameter, stripping `env` before forwarding, error handling for invalid or missing `env`, stripping unsupported extra parameters per environment, `create_proxy_server` construction, and result passthrough.
 
+**test_auth_config.py** contains unit tests for auth config parsing in `mcp_env_mux.config`. Validates backward compatibility (no `auth` key), successful parsing of `AuthConfig`/`AzureConfig`/`RoleConfig`, `$VAR` substitution in `client_secret`, and required-field validation errors.
+
+**test_oauth_routes.py** contains unit tests for the OAuth PKCE helper (`verify_pkce`) and a smoke test that `register_oauth_routes` runs without error.
+
+**test_auth_e2e.py** contains end-to-end auth tests. Starts real backends with auth config and verifies: no-auth passthrough, 401 on missing token, well-known endpoints accessible without token, and valid JWT allows access.
+
 **test_e2e.py** contains end-to-end tests that exercise the full system. Each test starts real FastMCP backends, writes a config, launches the proxy subprocess, and connects a client. Scenarios include tool merging verification, call routing across environments, schema mismatch detection, subset tools, extra parameters, `--test-schema` validation mode, environment variable substitution in headers, three-environment setups, single-environment setups, empty backends, unreachable backends, tools with no parameters, and config validation errors.
 
 ## Test Infrastructure
@@ -29,6 +35,13 @@ The test suite validates the mcp-env-mux proxy at two levels: unit tests that ex
 | `mcp_env_mux.proxy` (`_make_handler`, `create_proxy_server`) | `test_proxy.py`, `test_e2e.py` (routing and call scenarios) |
 | `mcp_env_mux.discovery` (`discover_all`, `_make_client`) | `test_e2e.py` only (no dedicated unit tests) |
 | CLI (`--test-schema` flag, subprocess entry point) | `test_e2e.py` |
+| `mcp_env_mux.auth.keys` (`load_or_generate_key`, `get_public_key`) | `test_oauth_routes.py`, `test_auth_e2e.py` (fixture) |
+| `mcp_env_mux.auth.tokens` (`create_user_token`, `create_bot_token`) | `test_auth_e2e.py` (via `_make_token` helper) |
+| `mcp_env_mux.auth.oauth` (`verify_pkce`, `register_oauth_routes`) | `test_oauth_routes.py` |
+| `mcp_env_mux.auth.rbac` (`is_allowed`) | `test_auth_e2e.py` (indirectly via middleware) |
+| `mcp_env_mux.auth.middleware` (`RBACMiddleware`) | `test_auth_e2e.py` (indirectly via proxy) |
+| `mcp_env_mux.auth.ui` (`register_ui_routes`) | No dedicated tests |
+| `mcp_env_mux.config` (auth parsing: `AuthConfig`, `AzureConfig`, `RoleConfig`) | `test_auth_config.py` |
 
 ## Running Tests
 
