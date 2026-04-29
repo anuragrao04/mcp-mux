@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "fastmcp>=2.0.0",
+    "fastmcp>=3.2.0",
     "cryptography>=42.0",
     "PyJWT[crypto]>=2.8",
 ]
