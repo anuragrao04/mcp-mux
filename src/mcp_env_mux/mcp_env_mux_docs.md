@@ -16,7 +16,7 @@ mcp_env_mux is a proxy server that multiplexes multiple MCP backend environments
 
 **proxy.py** — Builds a `FastMCP` server from merged tools. Registers a handler per tool that extracts the `env` argument, strips env-specific parameters not supported by the target backend, and forwards the call to the correct client.
 
-**auth/** — Optional authentication and authorization package. When an `auth` block is present in the config, enables Azure AD OIDC login (OAuth 2.1 with PKCE), JWT-based request authentication, role-based access control per tool/environment, and a web UI for minting long-lived bot tokens. Contains: `keys.py` (RSA key management), `tokens.py` (JWT creation), `rbac.py` (permission logic), `middleware.py` (FastMCP RBAC middleware), `oauth.py` (OAuth 2.1 routes), `ui.py` (token minting UI).
+**auth/** — Optional authentication and authorization package. When an `auth` block is present in the config, the proxy attaches FastMCP's `AzureProvider` (extended as `HybridAzureProvider`) for Microsoft Entra ID OAuth via the OAuth Proxy pattern (DCR locally, fixed credentials upstream). The same provider also accepts locally-minted RS256 bot JWTs (`iss=mcp-env-mux`) for headless agents, dispatched on the `iss` claim. Contains: `hybrid.py` (`HybridAzureProvider`), `keys.py` (RSA key management for bot tokens), `tokens.py` (bot JWT creation), `rbac.py` (permission logic), `middleware.py` (FastMCP RBAC middleware reading roles from access-token claims), `ui.py` (token minting UI). See `/AUTH_DESIGN.md` for the full design.
 
 ## Data Flow
 

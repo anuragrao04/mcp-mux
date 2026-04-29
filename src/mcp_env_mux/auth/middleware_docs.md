@@ -2,7 +2,7 @@
 
 ## Purpose
 
-FastMCP RBAC middleware that intercepts every tool call and enforces role-based access control. Extracts the user's roles from the JWT and checks them against configured role definitions before allowing the call through.
+FastMCP RBAC middleware that intercepts every tool call and enforces role-based access control. Reads the authenticated principal's roles from `get_access_token().claims["roles"]` and checks them against configured role definitions.
 
 ## Public API
 
@@ -12,25 +12,26 @@ A FastMCP `Middleware` subclass. Instantiated with `role_definitions: dict[str, 
 
 #### `on_call_tool(context: MiddlewareContext, call_next) -> Any`
 
-Intercept logic:
-1. Extracts `tool_name` and `env` from the call arguments.
-2. If `env` is `None` (tool has no env param), passes through to `call_next`.
-3. Attempts to read JWT roles via FastMCP's `get_access_token()`.
-4. Fallback: decodes the JWT from the HTTP `Authorization` header directly (without signature verification — assumes `JWTVerifier` already validated it upstream).
-5. Calls `rbac.is_allowed(roles, role_definitions, env, tool_name)`.
-6. If denied, raises `ToolError` with a 403-style message.
-7. If allowed, calls `call_next(context)`.
+Logic:
+
+1. Extract `tool_name` from `context.message.name`.
+2. Extract `env` from `context.message.arguments`. If absent (tool has no `env` param), passthrough — the handler will raise its own validation error.
+3. `token = get_access_token()` — populated by FastMCP after the auth provider verifies the bearer.
+4. `roles = token.claims.get("roles", []) if token else []`.
+5. If `rbac.is_allowed(roles, self.role_definitions, env, tool_name)` is False, raise `ToolError` with a 403-style message.
+6. Otherwise, `await call_next(context)`.
+
+The previous implementation had a fallback that decoded the JWT directly from the request header on top of `get_access_token()`. **Removed.** With `HybridAzureProvider` populating the access-token context correctly for both user and bot tokens, the fallback is unnecessary. Keep this module focused.
 
 ## Dependencies
 
 - `fastmcp.server.middleware.Middleware`, `MiddlewareContext`
-- `fastmcp.server.dependencies.get_access_token`, `get_http_request` (lazy imports)
-- `fastmcp.exceptions.ToolError` (lazy import)
+- `fastmcp.server.dependencies.get_access_token`
+- `fastmcp.exceptions.ToolError`
 - `mcp_env_mux.auth.rbac.is_allowed`
 - `mcp_env_mux.config.RoleConfig`
-- `jwt` (PyJWT) for fallback token decoding
 
 ## Error Handling
 
-- Role extraction failures (both primary and fallback paths) are caught silently; if roles cannot be determined, the empty role list will cause `is_allowed` to return `False`, and `ToolError` is raised.
-- `ToolError` raised on access denial with tool name and environment in the message.
+- If no access token in context (auth was disabled or failed upstream), `roles` is empty and `is_allowed` returns False → `ToolError`.
+- `ToolError` raised on access denial; message includes tool name and environment.

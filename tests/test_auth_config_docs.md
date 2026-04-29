@@ -12,15 +12,19 @@ Tests backward compatibility: config without an `auth` key loads successfully wi
 
 ### `TestValidAuthConfig`
 
-Tests successful auth config parsing: `AuthConfig` instance created, `AzureConfig` fields populated, roles parsed into `RoleConfig` with correct `allowed_envs`, `token_minting_roles` list, default `token_max_expiry_days` (180), and custom expiry override.
+Tests successful auth config parsing: `AuthConfig` instance created, `AzureConfig` fields populated, `base_url` and `required_scopes` populated, roles parsed into `RoleConfig` with correct `allowed_envs`, `token_minting_roles` list, default `token_max_expiry_days` (180), and custom expiry override.
 
 ### `TestAuthEnvVarSubstitution`
 
-Tests `$VAR` substitution in `client_secret`: resolved from environment, and `ValueError` raised for missing env vars.
+Tests `$VAR` substitution in `client_secret` (and any other string fields that support it): resolved from environment, and `ValueError` raised for missing env vars.
 
 ### `TestMissingAuthFields`
 
-Tests required-field validation: missing `azure`, `signing_key_file`, `roles`, `token_minting_roles`, and `azure.tenant_id` each raise `ValueError` with the field name in the message.
+Tests required-field validation: missing `azure`, `base_url`, `required_scopes`, `signing_key_file`, `roles`, `token_minting_roles`, and `azure.tenant_id` each raise `ValueError` with the field name in the message.
+
+### `TestRequiredScopesValidation`
+
+Tests that `required_scopes` must be a non-empty list — empty list or wrong type raises `ValueError`.
 
 ## Dependencies
 

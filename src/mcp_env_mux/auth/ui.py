@@ -4,16 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-import jwt as pyjwt
 from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
+from mcp_env_mux.auth.hybrid import HybridAzureProvider
 from mcp_env_mux.auth.tokens import create_bot_token
 from mcp_env_mux.config import AuthConfig
-
-_ISSUER = "mcp-env-mux"
-_AUDIENCE = "mcp-env-mux"
 
 
 def _extract_bearer(request: Request) -> str | None:
@@ -23,33 +20,32 @@ def _extract_bearer(request: Request) -> str | None:
     return None
 
 
-def _verify_minting_access(
+async def _verify_minting_access(
     token: str,
-    public_key: Any,
+    auth_provider: HybridAzureProvider,
     auth_config: AuthConfig,
 ) -> tuple[str, list[str]] | None:
-    """Verify token and check that the user holds a minting role.
+    """Verify token via the auth provider and check minting role.
 
-    Returns (email, roles) on success, None on failure.
+    Returns (subject, roles) on success, None on failure.
     """
-    try:
-        claims = pyjwt.decode(
-            token,
-            public_key,
-            algorithms=["RS256"],
-            audience=_AUDIENCE,
-            issuer=_ISSUER,
-        )
-    except pyjwt.PyJWTError:
+    access_token = await auth_provider.verify_token(token)
+    if access_token is None:
         return None
 
-    roles: list[str] = claims.get("roles", [])
-    subject: str = claims.get("sub", "")
+    claims = getattr(access_token, "claims", None) or {}
+    roles: list[str] = claims.get("roles", []) or []
 
     # Must hold at least one minting role
     if not any(r in auth_config.token_minting_roles for r in roles):
         return None
 
+    subject = (
+        claims.get("preferred_username")
+        or claims.get("email")
+        or claims.get("sub")
+        or "unknown"
+    )
     return subject, roles
 
 
@@ -57,7 +53,7 @@ def register_ui_routes(
     server: FastMCP,
     auth_config: AuthConfig,
     private_key: Any,
-    public_key: Any,
+    auth_provider: HybridAzureProvider,
 ) -> None:
     """Register token minting UI routes on the FastMCP server."""
 
@@ -73,7 +69,7 @@ def register_ui_routes(
         if raw_token is None:
             return HTMLResponse(_render_auth_required(), status_code=401)
 
-        result = _verify_minting_access(raw_token, public_key, auth_config)
+        result = await _verify_minting_access(raw_token, auth_provider, auth_config)
         if result is None:
             return HTMLResponse(_render_forbidden(), status_code=403)
 
@@ -90,7 +86,7 @@ def register_ui_routes(
         if raw_token is None:
             return HTMLResponse(_render_auth_required(), status_code=401)
 
-        result = _verify_minting_access(raw_token, public_key, auth_config)
+        result = await _verify_minting_access(raw_token, auth_provider, auth_config)
         if result is None:
             return HTMLResponse(_render_forbidden(), status_code=403)
 

@@ -4,62 +4,84 @@
 
 The `auth` package adds optional authentication and authorization to mcp-env-mux. When an `auth` block is present in the config, the proxy requires JWT Bearer tokens on all MCP requests and enforces role-based access control per tool/environment. When the `auth` block is absent, the proxy operates without authentication (backward compatible).
 
+> **See `/AUTH_DESIGN.md` at the repo root** for the authoritative design of the auth rework. This file summarizes the resulting module layout.
+
+## Two token types
+
+| Token | Issuer | Used by | Verified by |
+|---|---|---|---|
+| **User** | Microsoft Entra ID | Interactive clients (Claude Code, browsers) | Azure JWKS, via `HybridAzureProvider`'s parent `AzureProvider` |
+| **Bot** | mcp-env-mux itself (RS256, local key) | Headless agents | Local `JWTVerifier`, via `HybridAzureProvider`'s local-verifier branch |
+
+Both are presented as `Authorization: Bearer <token>`; dispatch is based on the `iss` claim.
+
 ## Module Summary
 
-**keys.py** — RSA key management. Loads an existing PEM private key from disk or generates a new 2048-bit key. Also extracts the corresponding public key.
+**hybrid.py** — `HybridAzureProvider`. Subclass of `fastmcp.server.auth.providers.azure.AzureProvider`. Inherits the full Azure OAuth flow (DCR proxy, login, callback, token endpoint, all `/.well-known/*` discovery routes, JWKS-based JWT verification). Adds a `verify_token` override that routes tokens whose `iss == "mcp-env-mux"` to a local `JWTVerifier` configured with the bot-signing public key.
 
-**tokens.py** — JWT creation. Produces RS256-signed tokens in two flavors: short-lived user tokens (1 hour default, from OAuth login) and long-lived bot tokens (configurable days, minted via UI).
+**keys.py** — RSA key management. Loads an existing PEM private key from disk or generates a new 2048-bit key. Used for **bot tokens only**.
+
+**tokens.py** — JWT creation for **bot tokens only**. RS256-signed long-lived JWTs (configurable days, minted via UI). User tokens are issued by Azure directly — no longer minted here.
 
 **rbac.py** — Permission logic. Pure function `is_allowed` checks user roles against configured `allowed_envs` patterns using `fnmatch` glob matching. Multi-role permissions are unioned; no deny rules.
 
-**middleware.py** — FastMCP middleware. Intercepts every `call_tool` request, extracts roles from the JWT, and calls `rbac.is_allowed`. Raises `ToolError` on denial. Passes through if the tool has no `env` parameter.
+**middleware.py** — FastMCP middleware. Intercepts every `call_tool` request, reads roles from `get_access_token().claims["roles"]`, and calls `rbac.is_allowed`. Raises `ToolError` on denial. Passes through if the tool has no `env` parameter.
 
-**oauth.py** — OAuth 2.1 endpoints. Implements Azure AD OIDC flow with PKCE (S256). Registers `/.well-known/*` discovery, `/auth/login`, `/auth/callback`, and `/auth/token` routes. Exchanges Azure auth codes for local JWTs.
-
-**ui.py** — Token minting UI. HTML routes at `/ui/tokens` (GET form, POST mint) for creating bot tokens. Requires a valid JWT with a minting role.
+**ui.py** — Token minting UI. HTML routes at `/ui/tokens` (GET form, POST mint) for creating bot tokens. Verifies the caller's bearer via the `HybridAzureProvider` (so admins can access the UI using their Azure session) and checks for a minting role.
 
 ## Data Flow
 
 ```
-Browser/Client
+Browser/Claude Code (interactive)
   |
-  |-- /.well-known/* --> oauth.py (discovery metadata)
+  |-- /.well-known/oauth-protected-resource[/mcp] --> AzureProvider (built-in)
+  |-- /.well-known/oauth-authorization-server     --> AzureProvider (advertises DCR)
+  |-- /register, /authorize, /callback, /token    --> AzureProvider DCR proxy + Azure
+  |-- /mcp (tool call)
+  |     Authorization: Bearer <Azure access token>
+  |     -> HybridAzureProvider.verify_token (delegates to super → Azure JWKS)
+  |     -> RBACMiddleware.on_call_tool -> rbac.is_allowed
+  |     -> proxy handler
+
+Bot (headless)
   |
-  |-- /auth/login -----> oauth.py --> Azure AD --> /auth/callback --> oauth.py
-  |                                                (exchange Azure code, issue local code)
-  |-- /auth/token -----> oauth.py --> tokens.py (mint user JWT)
+  |-- /mcp (tool call)
+  |     Authorization: Bearer <bot JWT>  (iss=mcp-env-mux, signed by local RSA)
+  |     -> HybridAzureProvider.verify_token (iss match → local JWTVerifier)
+  |     -> RBACMiddleware.on_call_tool -> rbac.is_allowed
+  |     -> proxy handler
+
+Admin minting a bot token
   |
-  |-- /mcp (tool call) --> middleware.py --> rbac.py --> is_allowed?
-  |                            |                         |
-  |                            | yes --> proxy handler   | no --> ToolError (403)
-  |
-  |-- /ui/tokens -------> ui.py --> tokens.py (mint bot JWT)
+  |-- /ui/tokens
+  |     Authorization: Bearer <user or admin-bot token>
+  |     -> ui._verify_minting_access calls hybrid.verify_token
+  |     -> if claims.roles ∩ token_minting_roles is non-empty: render form / mint
+  |     -> tokens.create_bot_token (RS256 with local private key)
 ```
 
 ## Key Types (from config.py)
 
-- **`AuthConfig`** — Top-level auth config: `azure: AzureConfig`, `signing_key_file`, `roles: dict[str, RoleConfig]`, `token_minting_roles: list[str]`, `token_max_expiry_days: int`.
-- **`AzureConfig`** — Azure AD credentials: `tenant_id`, `client_id`, `client_secret`.
-- **`RoleConfig`** — Per-role permissions: `allowed_envs: dict[str, list[str]]` mapping env patterns to tool patterns.
+- **`AuthConfig`** — Top-level: `azure: AzureConfig`, `base_url: str`, `required_scopes: list[str]`, `signing_key_file: str`, `roles: dict[str, RoleConfig]`, `token_minting_roles: list[str]`, `token_max_expiry_days: int`.
+- **`AzureConfig`** — `tenant_id`, `client_id`, `client_secret`.
+- **`RoleConfig`** — `allowed_envs: dict[str, list[str]]` mapping env patterns to tool patterns.
 
 ## Token Claims
 
-Both user and bot tokens share the same claim structure:
-
-| Claim | User Token | Bot Token |
-|-------|-----------|-----------|
-| `sub` | User email | Bot name |
-| `type` | `"user"` | `"bot"` |
-| `roles` | From Azure ID token (filtered) | Selected at mint time |
-| `created_by` | Same as `sub` | Minting user's email |
-| `exp` | iat + 3600s (default) | iat + N days |
-| `iss` | `"mcp-env-mux"` | `"mcp-env-mux"` |
-| `aud` | `"mcp-env-mux"` | `"mcp-env-mux"` |
+| Claim | User Token (Azure-issued) | Bot Token (locally minted) |
+|-------|---------------------------|----------------------------|
+| `sub` | Azure user object ID | Bot name |
+| `preferred_username` / `email` | User's UPN / email | not present |
+| `roles` | Azure App Roles assigned to the user | Roles selected at mint time |
+| `iss` | `https://login.microsoftonline.com/{tenant}/v2.0` | `"mcp-env-mux"` |
+| `aud` | `api://{client_id}` (or `{client_id}`) | `"mcp-env-mux"` |
+| `exp` | Azure default (~1h) | iat + N days |
 
 ## Error Model
 
-- **No auth config** — All requests pass through. No middleware, no routes registered.
-- **Missing/invalid JWT** — HTTP 401 from the JWT verifier (upstream of middleware).
-- **Valid JWT, insufficient role** — `ToolError` raised by `RBACMiddleware` (403-style message).
-- **OAuth flow errors** — HTTP 400/502 from `oauth.py` routes.
-- **Minting errors** — HTTP 401/403/400 from `ui.py` routes.
+- **No auth config** — All requests pass through. No middleware, no provider attached.
+- **Missing/invalid Bearer** — HTTP 401 from FastMCP (the auth provider rejects).
+- **Valid token, insufficient role** — `ToolError` raised by `RBACMiddleware`.
+- **UI: missing/invalid Bearer** — HTTP 401 from `ui.py`.
+- **UI: valid token, no minting role** — HTTP 403 from `ui.py`.
+- **UI: form validation** — HTTP 400 with errors re-rendered inline.

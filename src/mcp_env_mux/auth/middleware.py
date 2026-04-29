@@ -11,8 +11,10 @@ from mcp_env_mux.config import RoleConfig
 class RBACMiddleware(Middleware):
     """Enforce role-based access control on every tool call.
 
-    Checks the authenticated user's roles (from the JWT) against the configured
-    role definitions. Returns a ToolError with a 403 message if access is denied.
+    Reads the authenticated principal's roles from
+    ``get_access_token().claims["roles"]`` (populated by the auth provider)
+    and checks them against the configured role definitions. Raises
+    ``ToolError`` on denial.
     """
 
     def __init__(self, role_definitions: dict[str, RoleConfig]) -> None:
@@ -27,29 +29,10 @@ class RBACMiddleware(Middleware):
             # Tool has no env parameter — let it through (handler will error)
             return await call_next(context)
 
-        # Attempt to get JWT claims via FastMCP's access-token context
-        roles: list[str] = []
-        try:
-            from fastmcp.server.dependencies import get_access_token  # type: ignore[import]
+        from fastmcp.server.dependencies import get_access_token  # type: ignore[import]
 
-            token = get_access_token()
-            if token is not None:
-                roles = token.claims.get("roles", [])
-        except Exception:
-            # Fallback: try to decode JWT from HTTP request directly
-            try:
-                from fastmcp.server.dependencies import get_http_request  # type: ignore[import]
-                import jwt as pyjwt
-
-                request = get_http_request()
-                auth_header = request.headers.get("authorization", "")
-                raw_token = auth_header.removeprefix("Bearer ").strip()
-                if raw_token:
-                    # Decode without verifying — JWTVerifier already did that
-                    claims = pyjwt.decode(raw_token, options={"verify_signature": False})
-                    roles = claims.get("roles", [])
-            except Exception:
-                pass  # Cannot determine roles; deny below
+        token = get_access_token()
+        roles = token.claims.get("roles", []) if token else []
 
         if not is_allowed(roles, self.role_definitions, env, tool_name):
             from fastmcp.exceptions import ToolError  # type: ignore[import]

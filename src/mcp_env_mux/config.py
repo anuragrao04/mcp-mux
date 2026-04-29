@@ -31,6 +31,8 @@ class RoleConfig:
 @dataclass
 class AuthConfig:
     azure: AzureConfig
+    base_url: str
+    required_scopes: list[str]
     signing_key_file: str
     roles: dict[str, RoleConfig]
     token_minting_roles: list[str]
@@ -84,6 +86,21 @@ def _parse_auth_config(auth_raw: dict) -> AuthConfig:
         client_secret=_resolve_string_env_vars(azure_raw["client_secret"]),
     )
 
+    base_url = auth_raw.get("base_url")
+    if not base_url or not isinstance(base_url, str):
+        raise ValueError("auth.base_url is required")
+
+    required_scopes = auth_raw.get("required_scopes")
+    if required_scopes is None:
+        raise ValueError("auth.required_scopes is required")
+    if not isinstance(required_scopes, list):
+        raise ValueError("auth.required_scopes must be a list of strings")
+    if not required_scopes:
+        raise ValueError("auth.required_scopes is required")
+    for scope in required_scopes:
+        if not isinstance(scope, str):
+            raise ValueError("auth.required_scopes must be a list of strings")
+
     signing_key_file = auth_raw.get("signing_key_file")
     if not signing_key_file:
         raise ValueError("auth.signing_key_file is required")
@@ -110,6 +127,8 @@ def _parse_auth_config(auth_raw: dict) -> AuthConfig:
 
     return AuthConfig(
         azure=azure,
+        base_url=base_url,
+        required_scopes=required_scopes,
         signing_key_file=signing_key_file,
         roles=roles,
         token_minting_roles=token_minting_roles,
