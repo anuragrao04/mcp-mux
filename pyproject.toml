@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-env-mux"
-version = "0.3.3"
+version = "0.3.4"
 description = "Merge multiple instances of the same MCP server across environments into a single endpoint with a unified env parameter."
 readme = "README.md"
 requires-python = ">=3.11"

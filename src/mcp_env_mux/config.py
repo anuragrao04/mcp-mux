@@ -48,29 +48,35 @@ class Config:
     metrics: MetricsConfig | None = None
 
 
-def resolve_env_vars(headers: dict[str, str]) -> dict[str, str]:
-    """Replace $VAR patterns in header values with os.environ values."""
-    result = {}
-    for key, value in headers.items():
-        def replacer(match: re.Match) -> str:
-            var_name = match.group(1)
-            if var_name not in os.environ:
-                raise ValueError(f"Environment variable {var_name!r} is not set")
-            return os.environ[var_name]
-
-        result[key] = re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", replacer, value)
-    return result
+def resolve_env_vars(values: dict[str, str]) -> dict[str, str]:
+    """Replace ${VAR} patterns in string values with os.environ values."""
+    return {key: _resolve_string_env_vars(value) for key, value in values.items()}
 
 
 def _resolve_string_env_vars(value: str) -> str:
-    """Replace $VAR patterns in a single string value with os.environ values."""
+    """Replace ${VAR} patterns in a single string value with os.environ values."""
     def replacer(match: re.Match) -> str:
         var_name = match.group(1)
         if var_name not in os.environ:
             raise ValueError(f"Environment variable {var_name!r} is not set")
         return os.environ[var_name]
 
-    return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", replacer, value)
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", replacer, value)
+
+
+def _resolve_env_vars_in_value(value: object) -> object:
+    """Resolve ${VAR} patterns in parsed JSON values.
+
+    Traverses nested dicts/lists so all string fields in config are handled,
+    but each original string is substituted only once.
+    """
+    if isinstance(value, str):
+        return _resolve_string_env_vars(value)
+    if isinstance(value, list):
+        return [_resolve_env_vars_in_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _resolve_env_vars_in_value(item) for key, item in value.items()}
+    return value
 
 
 def _parse_auth_config(auth_raw: dict) -> AuthConfig:
@@ -86,7 +92,7 @@ def _parse_auth_config(auth_raw: dict) -> AuthConfig:
     azure = AzureConfig(
         tenant_id=azure_raw["tenant_id"],
         client_id=azure_raw["client_id"],
-        client_secret=_resolve_string_env_vars(azure_raw["client_secret"]),
+        client_secret=azure_raw["client_secret"],
     )
 
     base_url = auth_raw.get("base_url")
@@ -157,7 +163,7 @@ def load_config(path: Path) -> Config:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    raw = json.loads(path.read_text())
+    raw = _resolve_env_vars_in_value(json.loads(path.read_text()))
 
     if "environments" not in raw:
         raise ValueError("Config must contain 'environments' key")
@@ -173,7 +179,7 @@ def load_config(path: Path) -> Config:
         if "description" not in env_data:
             raise ValueError(f"Environment {name!r} missing 'description'")
 
-        headers = resolve_env_vars(env_data.get("headers", {}))
+        headers = env_data.get("headers", {})
         environments[name] = EnvironmentConfig(
             description=env_data["description"],
             url=env_data["url"],

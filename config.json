@@ -4,14 +4,14 @@
       "description": "RSL (Razorpay Software Limited) Coralogix team",
       "url": "https://api.coralogix.in/mgmt/api/v1/mcp",
       "headers": {
-        "Authorization": "$CORALOGIX_PROD_API_KEY"
+        "Authorization": "${CORALOGIX_PROD_API_KEY}"
       }
     },
     "RZPX Prod": {
       "description": "RZPX (Banking stuff, Razorpay X Software Limited) Coralogix team",
       "url": "https://api.coralogix.in/mgmt/api/v1/mcp",
       "headers": {
-        "Authorization": "$CORALOGIX_RZPX_PROD_API_KEY"
+        "Authorization": "${CORALOGIX_RZPX_PROD_API_KEY}"
       }
     }
   },
@@ -24,7 +24,7 @@
     "azure": {
       "tenant_id": "125a8953-e30c-43e8-938e-2bb89c12431a",
       "client_id": "926bd93b-8c23-4b73-ac7e-69b1d5275672",
-      "client_secret": "$CORA_UNIFIED_MCP_CLIENT_SECRET"
+      "client_secret": "${CORA_UNIFIED_MCP_CLIENT_SECRET}"
     },
     "base_url": "http://localhost:8080",
     "required_scopes": ["access_as_user"],

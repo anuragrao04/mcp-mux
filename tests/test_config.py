@@ -12,12 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_env_mux.config import (
-    Config,
-    EnvironmentConfig,
-    load_config,
-    resolve_env_vars,
-)
+from mcp_env_mux.config import Config, EnvironmentConfig, load_config, resolve_env_vars
 
 
 # ===================================================================
@@ -188,13 +183,13 @@ class TestLoadConfigInvalid:
 
 
 class TestResolveEnvVars:
-    """Test environment variable substitution in header values."""
+    """Test environment variable substitution in string values."""
 
     def test_single_var_replaced(self, monkeypatch):
-        """A header value of '$VAR' should be replaced with the env var value."""
+        """A value of '${VAR}' should be replaced with the env var value."""
         monkeypatch.setenv("MY_API_KEY", "secret-123")
 
-        result = resolve_env_vars({"Authorization": "$MY_API_KEY"})
+        result = resolve_env_vars({"Authorization": "${MY_API_KEY}"})
 
         assert result == {"Authorization": "secret-123"}
 
@@ -203,7 +198,7 @@ class TestResolveEnvVars:
         monkeypatch.delenv("DEFINITELY_NOT_SET", raising=False)
 
         with pytest.raises(Exception):
-            resolve_env_vars({"Authorization": "$DEFINITELY_NOT_SET"})
+            resolve_env_vars({"Authorization": "${DEFINITELY_NOT_SET}"})
 
     def test_value_without_dollar_passes_through(self):
         """Values without '$' should pass through unchanged."""
@@ -211,29 +206,37 @@ class TestResolveEnvVars:
 
         assert result == {"Content-Type": "application/json"}
 
+    def test_bare_dollar_var_is_not_expanded(self, monkeypatch):
+        """Bare $VAR syntax should remain literal."""
+        monkeypatch.setenv("SECRET", "token-xyz")
+
+        result = resolve_env_vars({"Authorization": "$SECRET"})
+
+        assert result == {"Authorization": "$SECRET"}
+
     def test_multiple_vars_in_one_value(self, monkeypatch):
-        """Multiple $VAR references in one value should all be replaced."""
+        """Multiple ${VAR} references in one value should all be replaced."""
         monkeypatch.setenv("SCHEME", "Bearer")
         monkeypatch.setenv("TOKEN", "abc123")
 
-        result = resolve_env_vars({"Authorization": "$SCHEME $TOKEN"})
+        result = resolve_env_vars({"Authorization": "${SCHEME} ${TOKEN}"})
 
         assert result == {"Authorization": "Bearer abc123"}
 
     def test_empty_headers_returns_empty(self):
-        """An empty headers dict should return an empty dict."""
+        """An empty dict should return an empty dict."""
         result = resolve_env_vars({})
 
         assert result == {}
 
     def test_multiple_headers_resolved(self, monkeypatch):
-        """Multiple headers with env vars should all be resolved."""
+        """Multiple values with env vars should all be resolved."""
         monkeypatch.setenv("KEY_A", "value-a")
         monkeypatch.setenv("KEY_B", "value-b")
 
         result = resolve_env_vars({
-            "X-Header-A": "$KEY_A",
-            "X-Header-B": "$KEY_B",
+            "X-Header-A": "${KEY_A}",
+            "X-Header-B": "${KEY_B}",
         })
 
         assert result == {
@@ -242,15 +245,95 @@ class TestResolveEnvVars:
         }
 
     def test_mixed_static_and_var_values(self, monkeypatch):
-        """Headers with a mix of static and $VAR values should work."""
+        """Values with a mix of static and ${VAR} parts should work."""
         monkeypatch.setenv("SECRET", "token-xyz")
 
         result = resolve_env_vars({
             "Content-Type": "application/json",
-            "Authorization": "$SECRET",
+            "Authorization": "Bearer ${SECRET}",
         })
 
         assert result == {
             "Content-Type": "application/json",
-            "Authorization": "token-xyz",
+            "Authorization": "Bearer token-xyz",
         }
+
+
+class TestLoadConfigEnvVarSubstitution:
+    def test_resolves_all_string_fields_in_config(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("ENV_DESC", "Production")
+        monkeypatch.setenv("HOST", "localhost")
+        monkeypatch.setenv("PORT", "9000")
+        monkeypatch.setenv("AUTHZ", "Bearer secret-123")
+        monkeypatch.setenv("METRICS_PATH", "/custom-metrics")
+        monkeypatch.setenv("TENANT_ID", "tenant-123")
+        monkeypatch.setenv("CLIENT_ID", "client-456")
+        monkeypatch.setenv("CLIENT_SECRET", "secret-789")
+        monkeypatch.setenv("BASE_URL", "http://localhost:8080")
+        monkeypatch.setenv("SCOPE", "access_as_user")
+        monkeypatch.setenv("SIGNING_KEY_FILE", "/tmp/test_key.pem")
+        monkeypatch.setenv("ROLE", "admin")
+
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "environments": {
+                "prod": {
+                    "description": "${ENV_DESC} environment.",
+                    "url": "http://${HOST}:${PORT}/mcp",
+                    "headers": {
+                        "Authorization": "${AUTHZ}",
+                    },
+                }
+            },
+            "metrics": {
+                "enabled": True,
+                "path": "${METRICS_PATH}",
+                "user_level_metrics": True,
+            },
+            "auth": {
+                "azure": {
+                    "tenant_id": "${TENANT_ID}",
+                    "client_id": "${CLIENT_ID}",
+                    "client_secret": "${CLIENT_SECRET}",
+                },
+                "base_url": "${BASE_URL}",
+                "required_scopes": ["${SCOPE}"],
+                "signing_key_file": "${SIGNING_KEY_FILE}",
+                "roles": {
+                    "${ROLE}": {"allowed_envs": {"*": ["*"]}},
+                },
+                "token_minting_roles": ["${ROLE}"],
+            },
+        }))
+
+        config = load_config(config_path)
+
+        env = config.environments["prod"]
+        assert env.description == "Production environment."
+        assert env.url == "http://localhost:9000/mcp"
+        assert env.headers == {"Authorization": "Bearer secret-123"}
+        assert config.metrics.path == "/custom-metrics"
+        assert config.auth.azure.tenant_id == "tenant-123"
+        assert config.auth.azure.client_id == "client-456"
+        assert config.auth.azure.client_secret == "secret-789"
+        assert config.auth.base_url == "http://localhost:8080"
+        assert config.auth.required_scopes == ["access_as_user"]
+        assert config.auth.signing_key_file == "/tmp/test_key.pem"
+        assert config.auth.token_minting_roles == ["admin"]
+        assert "${ROLE}" in config.auth.roles
+
+    def test_missing_var_anywhere_in_config_raises(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv("MISSING_URL_PART", raising=False)
+
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "environments": {
+                "prod": {
+                    "description": "Production.",
+                    "url": "http://${MISSING_URL_PART}/mcp",
+                }
+            }
+        }))
+
+        with pytest.raises(ValueError, match="MISSING_URL_PART"):
+            load_config(config_path)

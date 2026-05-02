@@ -697,10 +697,10 @@ class TestSchemaValidationMode:
 
 
 class TestEnvVarSubstitution:
-    """Verify that $ENV_VAR references in config headers are resolved."""
+    """Verify that ${ENV_VAR} references in config strings are resolved."""
 
     async def test_env_var_in_headers(self, tmp_path):
-        """Header values with $VAR syntax should be substituted from environment."""
+        """Header values with ${VAR} syntax should be substituted from environment."""
 
         def make_handler(env_name: str):
             return lambda kw: json.dumps({"from": env_name})
@@ -715,7 +715,45 @@ class TestEnvVarSubstitution:
             },
         )
 
-        # Write config with $ENV_VAR reference
+        # Write config with ${ENV_VAR} reference
+        config_path = write_config(
+            {
+                "prod": {
+                    "description": "Prod.",
+                    "url": backend.url,
+                    "headers": {
+                        "Authorization": "${TEST_API_KEY}",
+                    },
+                },
+            },
+            tmp_path,
+        )
+
+        # The proxy should substitute the env var
+        proxy = start_proxy(
+            config_path,
+            env_vars={"TEST_API_KEY": "Bearer secret-token-123"},
+        )
+        try:
+            async with Client(proxy.url) as client:
+                tools = await client.list_tools()
+                assert any(t.name == "whoami" for t in tools)
+        finally:
+            proxy.stop()
+
+    async def test_bare_dollar_var_in_headers_is_not_expanded(self, tmp_path):
+        """Header values using bare $VAR syntax should remain literal."""
+
+        backend = await start_backend(
+            "prod",
+            {
+                "whoami": tool_def(
+                    description="Return identity.",
+                    handler=lambda kw: json.dumps({"from": "prod"}),
+                ),
+            },
+        )
+
         config_path = write_config(
             {
                 "prod": {
@@ -729,7 +767,6 @@ class TestEnvVarSubstitution:
             tmp_path,
         )
 
-        # The proxy should substitute the env var
         proxy = start_proxy(
             config_path,
             env_vars={"TEST_API_KEY": "Bearer secret-token-123"},

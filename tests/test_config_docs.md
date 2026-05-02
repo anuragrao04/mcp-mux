@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Unit tests for `mcp_env_mux.config`. Validates config loading, structural validation, and environment variable substitution in header values.
+Unit tests for `mcp_env_mux.config`. Validates config loading, structural validation, and environment variable substitution across string values in config.
 
 ## Test Classes
 
@@ -16,7 +16,7 @@ Tests error cases: missing file, invalid JSON, empty environments dict, missing 
 
 ### `TestResolveEnvVars`
 
-Tests `$VAR` substitution: single variable, unset variable (error), literal values without `$`, multiple variables in one value, empty headers, multiple headers, and mixed static/variable values.
+Tests `${VAR}` substitution: single variable, unset variable (error), literal values without `$`, bare `$VAR` preservation, multiple variables in one value, empty inputs, multiple values, mixed static/variable values, and config-wide substitution beyond headers.
 
 ## Dependencies
 

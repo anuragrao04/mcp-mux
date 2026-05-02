@@ -123,7 +123,7 @@ class TestValidAuthConfig:
 
 
 # ---------------------------------------------------------------------------
-# $ENV_VAR substitution in client_secret
+# ${ENV_VAR} substitution in auth strings
 # ---------------------------------------------------------------------------
 
 class TestAuthEnvVarSubstitution:
@@ -131,17 +131,55 @@ class TestAuthEnvVarSubstitution:
         monkeypatch.setenv("MY_SECRET", "resolved-value")
         auth = {
             **_VALID_AUTH,
-            "azure": {**_VALID_AUTH["azure"], "client_secret": "$MY_SECRET"},
+            "azure": {**_VALID_AUTH["azure"], "client_secret": "${MY_SECRET}"},
         }
         data = {**_BASE_ENVS, "auth": auth}
         config = load_config(_write_config(tmp_path, data))
         assert config.auth.azure.client_secret == "resolved-value"
 
+    def test_other_auth_string_fields_are_resolved(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TENANT", "tenant-from-env")
+        monkeypatch.setenv("CLIENT", "client-from-env")
+        monkeypatch.setenv("BASE_URL", "http://localhost:9090")
+        monkeypatch.setenv("SCOPE", "scope-from-env")
+        monkeypatch.setenv("KEY_FILE", "/tmp/from-env.pem")
+        monkeypatch.setenv("ROLE", "admin")
+        auth = {
+            **_VALID_AUTH,
+            "azure": {
+                "tenant_id": "${TENANT}",
+                "client_id": "${CLIENT}",
+                "client_secret": "secret-789",
+            },
+            "base_url": "${BASE_URL}",
+            "required_scopes": ["${SCOPE}"],
+            "signing_key_file": "${KEY_FILE}",
+            "token_minting_roles": ["${ROLE}"],
+        }
+        data = {**_BASE_ENVS, "auth": auth}
+        config = load_config(_write_config(tmp_path, data))
+        assert config.auth.azure.tenant_id == "tenant-from-env"
+        assert config.auth.azure.client_id == "client-from-env"
+        assert config.auth.base_url == "http://localhost:9090"
+        assert config.auth.required_scopes == ["scope-from-env"]
+        assert config.auth.signing_key_file == "/tmp/from-env.pem"
+        assert config.auth.token_minting_roles == ["admin"]
+
+    def test_bare_dollar_var_in_auth_remains_literal(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MY_SECRET", "resolved-value")
+        auth = {
+            **_VALID_AUTH,
+            "azure": {**_VALID_AUTH["azure"], "client_secret": "$MY_SECRET"},
+        }
+        data = {**_BASE_ENVS, "auth": auth}
+        config = load_config(_write_config(tmp_path, data))
+        assert config.auth.azure.client_secret == "$MY_SECRET"
+
     def test_missing_env_var_raises(self, tmp_path, monkeypatch):
         monkeypatch.delenv("MISSING_VAR", raising=False)
         auth = {
             **_VALID_AUTH,
-            "azure": {**_VALID_AUTH["azure"], "client_secret": "$MISSING_VAR"},
+            "azure": {**_VALID_AUTH["azure"], "client_secret": "${MISSING_VAR}"},
         }
         data = {**_BASE_ENVS, "auth": auth}
         with pytest.raises(ValueError):
