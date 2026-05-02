@@ -157,7 +157,7 @@ Auth fields:
 - `azure.tenant_id` (required) -- Azure tenant ID.
 - `azure.client_id` (required) -- Azure app client ID.
 - `azure.client_secret` (required) -- Azure app client secret. Supports `$ENV_VAR` substitution.
-- `signing_key_file` (required) -- Path to the RSA private key used to sign local JWTs. Loaded if present or generated on first start.
+- `signing_key_file` (required) -- Path to the RSA private key used to sign local JWTs. Resolution order: if the file exists it is loaded; otherwise, if `MCP_ENV_MUX_SIGNING_KEY_PEM` is set, that PEM content is written to this path and loaded; otherwise a new key is generated on first start and written here.
 - `roles` (required) -- Map of role name to RBAC config.
 - `roles.<role>.allowed_envs` -- Map of environment glob pattern to list of tool glob patterns.
 - `token_minting_roles` (required) -- Roles allowed to access the token minting UI.
@@ -257,10 +257,19 @@ Both token types carry roles and are accepted by the MCP endpoint.
 
 `signing_key_file` points to the RSA private key used to sign local JWTs.
 
+Resolution order:
 - If the file exists, it is loaded.
-- If it does not exist, a new 2048-bit RSA key is generated and written automatically.
+- Else if `MCP_ENV_MUX_SIGNING_KEY_PEM` is set, that PEM content is written to the configured file path and loaded.
+- Else a new 2048-bit RSA key is generated and written automatically.
 
-Protect this file appropriately in production.
+The server logs where it sourced the signing key from in all cases:
+- existing file
+- `MCP_ENV_MUX_SIGNING_KEY_PEM`
+- newly generated key
+
+When a new signing key is generated automatically, the server logs warning-level messages loudly so the event is visible to operators. The warning explicitly calls out that horizontal scaling and rolling restarts will not work correctly unless all replicas share the same signing key.
+
+Protect this file appropriately in production. The private PEM is a secret. Prefer a mounted secret file or injecting `MCP_ENV_MUX_SIGNING_KEY_PEM` in environments where baking keys into images is undesirable.
 
 ## OAuth Endpoints
 
