@@ -17,6 +17,8 @@ Fields:
 
 Fields:
 - `environments: dict[str, EnvironmentConfig]` — Map of environment name to its configuration.
+- `auth: AuthConfig | None` — Optional auth configuration.
+- `metrics: MetricsConfig | None` — Optional metrics configuration.
 
 ### `resolve_env_vars(headers: dict[str, str]) -> dict[str, str]`
 
@@ -37,7 +39,7 @@ Raises:
 
 ## Data Flow
 
-`load_config` reads raw JSON, validates structure, calls `resolve_env_vars` on each environment's headers, and constructs `EnvironmentConfig` / `Config` dataclasses.
+`load_config` reads raw JSON, validates structure, calls `resolve_env_vars` on each environment's headers, parses optional auth and metrics blocks, and constructs `EnvironmentConfig` / `Config` dataclasses.
 
 ## Dependencies
 

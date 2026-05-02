@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mcp_env_mux.metrics.config import MetricsConfig
+
 
 @dataclass
 class EnvironmentConfig:
@@ -43,6 +45,7 @@ class AuthConfig:
 class Config:
     environments: dict[str, EnvironmentConfig]
     auth: AuthConfig | None = None  # None = auth disabled
+    metrics: MetricsConfig | None = None
 
 
 def resolve_env_vars(headers: dict[str, str]) -> dict[str, str]:
@@ -136,6 +139,19 @@ def _parse_auth_config(auth_raw: dict) -> AuthConfig:
     )
 
 
+def _parse_metrics_config(metrics_raw: dict | None) -> MetricsConfig:
+    if metrics_raw is None:
+        return MetricsConfig()
+    path = metrics_raw.get("path", "/metrics")
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise ValueError("metrics.path must be a string starting with '/'")
+    return MetricsConfig(
+        enabled=bool(metrics_raw.get("enabled", True)),
+        path=path,
+        user_level_metrics=bool(metrics_raw.get("user_level_metrics", False)),
+    )
+
+
 def load_config(path: Path) -> Config:
     """Load and validate a config file, returning a Config instance."""
     if not path.exists():
@@ -168,4 +184,6 @@ def load_config(path: Path) -> Config:
     if "auth" in raw:
         auth = _parse_auth_config(raw["auth"])
 
-    return Config(environments=environments, auth=auth)
+    metrics = _parse_metrics_config(raw.get("metrics"))
+
+    return Config(environments=environments, auth=auth, metrics=metrics)

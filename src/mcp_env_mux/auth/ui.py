@@ -16,6 +16,8 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from mcp_env_mux.auth.hybrid import HybridAzureProvider
 from mcp_env_mux.auth.tokens import create_bot_token
 from mcp_env_mux.config import AuthConfig
+from mcp_env_mux.metrics.registry import Metrics
+from mcp_env_mux.metrics.ui import instrument_ui_route, record_ui_login, record_ui_token_mint
 
 _UI_SESSION_COOKIE = "mcp_env_mux_ui_session"
 _UI_LOGIN_COOKIE = "mcp_env_mux_ui_login"
@@ -182,6 +184,7 @@ def register_ui_routes(
     auth_config: AuthConfig,
     private_key: Any,
     auth_provider: HybridAzureProvider,
+    metrics: Metrics | None = None,
 ) -> None:
     """Register token minting UI routes on the FastMCP server."""
 
@@ -193,6 +196,7 @@ def register_ui_routes(
     secure_cookies = _wants_secure_cookies(auth_config)
 
     @server.custom_route("/ui/login", methods=["GET"], name="ui_login")
+    @instrument_ui_route(metrics, "ui_login")
     async def ui_login(request: Request) -> Response:
         next_path = _validate_next_path(request.query_params.get("next"))
         callback_url = _build_ui_callback_url(request)
@@ -205,8 +209,10 @@ def register_ui_routes(
         return response
 
     @server.custom_route("/ui/callback", methods=["GET"], name="ui_callback")
+    @instrument_ui_route(metrics, "ui_callback")
     async def ui_callback(request: Request) -> Response:
         if request.query_params.get("error"):
+            record_ui_login(metrics, "error")
             return HTMLResponse(
                 _render_error(f"Azure login failed: {request.query_params.get('error')}"),
                 status_code=400,
@@ -216,12 +222,15 @@ def register_ui_routes(
         state = request.query_params.get("state")
         login_token = request.cookies.get(_UI_LOGIN_COOKIE)
         if not code or not state or not login_token:
+            record_ui_login(metrics, "error")
             return HTMLResponse(_render_error("Invalid login state."), status_code=400)
 
         login_claims = _load_ui_login_token(login_token, public_key_pem)
         if login_claims is None:
+            record_ui_login(metrics, "error")
             return HTMLResponse(_render_error("Login session expired."), status_code=400)
         if login_claims.get("txn_id") != state:
+            record_ui_login(metrics, "error")
             return HTMLResponse(_render_error("Invalid login state."), status_code=400)
 
         next_path = _validate_next_path(login_claims.get("next"))
@@ -233,8 +242,10 @@ def register_ui_routes(
                 callback_url=callback_url,
             )
         except ValueError as exc:
+            record_ui_login(metrics, "error")
             return HTMLResponse(_render_error(str(exc)), status_code=400)
         except Exception as exc:
+            record_ui_login(metrics, "error")
             return HTMLResponse(_render_error(f"Azure token exchange failed: {exc}"), status_code=500)
 
         subject = (
@@ -252,9 +263,11 @@ def register_ui_routes(
         response = RedirectResponse(next_path, status_code=302)
         _set_ui_session_cookie(response, session_token, secure_cookies)
         _clear_ui_login_cookie(response, secure_cookies)
+        record_ui_login(metrics, "success")
         return response
 
     @server.custom_route("/ui/tokens", methods=["GET"])
+    @instrument_ui_route(metrics, "ui_tokens_get")
     async def ui_tokens_get(request: Request) -> Response:
         result = _resolve_ui_principal(request, public_key_pem)
         if result is None:
@@ -269,6 +282,7 @@ def register_ui_routes(
         return HTMLResponse(_render_form(subject, available_roles, auth_config.token_max_expiry_days))
 
     @server.custom_route("/ui/tokens", methods=["POST"])
+    @instrument_ui_route(metrics, "ui_tokens_post")
     async def ui_tokens_post(request: Request) -> Response:
         result = _resolve_ui_principal(request, public_key_pem)
         if result is None:
@@ -283,6 +297,7 @@ def register_ui_routes(
         try:
             form = await request.form()
         except Exception:
+            record_ui_token_mint(metrics, "error")
             return HTMLResponse(_render_error("Could not parse form data."), status_code=400)
 
         name = str(form.get("name", "")).strip()
@@ -310,6 +325,7 @@ def register_ui_routes(
             errors.append(f"Unknown roles: {', '.join(invalid_roles)}")
 
         if errors:
+            record_ui_token_mint(metrics, "error")
             return HTMLResponse(
                 _render_form(
                     creator,
@@ -327,9 +343,11 @@ def register_ui_routes(
             created_by=creator,
             expiry_days=expiry_days,
         )
+        record_ui_token_mint(metrics, "success")
         return HTMLResponse(_render_token_display(new_token, name))
 
     @server.custom_route("/ui/logout", methods=["GET"])
+    @instrument_ui_route(metrics, "ui_logout")
     async def ui_logout(request: Request) -> Response:
         response = RedirectResponse("/ui/tokens", status_code=302)
         _clear_ui_session_cookie(response, secure_cookies)

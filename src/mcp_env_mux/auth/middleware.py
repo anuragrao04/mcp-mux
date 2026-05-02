@@ -10,6 +10,9 @@ from fastmcp.server.middleware import Middleware, MiddlewareContext
 from mcp_env_mux.auth.rbac import is_allowed
 from mcp_env_mux.config import RoleConfig
 from mcp_env_mux.merge import MergedTool, build_visible_tool_view
+from mcp_env_mux.metrics.auth import record_rbac_decision
+from mcp_env_mux.metrics.helpers import principal_type_from_claims
+from mcp_env_mux.metrics.registry import Metrics
 
 
 class RBACMiddleware(Middleware):
@@ -21,9 +24,15 @@ class RBACMiddleware(Middleware):
     ``ToolError`` on denial.
     """
 
-    def __init__(self, role_definitions: dict[str, RoleConfig], merged_tools: dict[str, MergedTool] | None = None) -> None:
+    def __init__(
+        self,
+        role_definitions: dict[str, RoleConfig],
+        merged_tools: dict[str, MergedTool] | None = None,
+        metrics: Metrics | None = None,
+    ) -> None:
         self.role_definitions = role_definitions
         self.merged_tools = merged_tools or {}
+        self.metrics = metrics
 
     def _get_roles(self) -> list[str]:
         from fastmcp.server.dependencies import get_access_token  # type: ignore[import]
@@ -80,8 +89,23 @@ class RBACMiddleware(Middleware):
             return await call_next(context)
 
         roles = self._get_roles()
+        principal_type = "unknown"
+        try:
+            from fastmcp.server.dependencies import get_access_token  # type: ignore[import]
+
+            token = get_access_token()
+            principal_type = principal_type_from_claims(token.claims if token else None)
+        except Exception:
+            principal_type = "unknown"
 
         if not is_allowed(roles, self.role_definitions, env, tool_name):
+            record_rbac_decision(
+                self.metrics,
+                tool=tool_name,
+                env=env,
+                decision="deny",
+                principal_type=principal_type,
+            )
             from fastmcp.exceptions import ToolError  # type: ignore[import]
 
             raise ToolError(
@@ -89,4 +113,11 @@ class RBACMiddleware(Middleware):
                 f"in environment {env!r}"
             )
 
+        record_rbac_decision(
+            self.metrics,
+            tool=tool_name,
+            env=env,
+            decision="allow",
+            principal_type=principal_type,
+        )
         return await call_next(context)

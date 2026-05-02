@@ -254,6 +254,48 @@ class TestToolCallRouting:
 # ===================================================================
 
 
+class TestJsonLogging:
+    """Verify proxy emits JSON-only logs."""
+
+    async def test_proxy_logs_are_json_only(self, tmp_path):
+        backend = await start_backend(
+            "json-log-be",
+            {
+                "echo": tool_def(
+                    description="Echo a message.",
+                    params={"msg": {"type": str, "required": True}},
+                    handler=lambda kw: json.dumps({"echoed": kw["msg"]}),
+                )
+            },
+        )
+        config_path = write_config(
+            {
+                "prod": {
+                    "description": "Production environment.",
+                    "url": backend.url,
+                }
+            },
+            tmp_path,
+        )
+
+        proxy = start_proxy(config_path, capture_logs=True)
+        try:
+            async with Client(proxy.url) as client:
+                await client.list_tools()
+                await client.call_tool("echo", {"env": "prod", "msg": "hello"})
+
+            assert proxy.stdout_path is not None
+            assert proxy.stderr_path is not None
+            stdout_lines = [line.strip() for line in proxy.stdout_path.read_text().splitlines() if line.strip()]
+            stderr_lines = [line.strip() for line in proxy.stderr_path.read_text().splitlines() if line.strip()]
+            all_lines = stdout_lines + stderr_lines
+            assert all_lines, "expected proxy to emit logs"
+            for line in all_lines:
+                json.loads(line)
+        finally:
+            proxy.stop()
+
+
 class TestHorizontalScalingBehavior:
     """Verify proxy requests are safe without replica-local MCP session affinity."""
 

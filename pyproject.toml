@@ -27,6 +27,7 @@ dependencies = [
     "fastmcp>=3.2.0",
     "cryptography>=42.0",
     "PyJWT[crypto]>=2.8",
+    "prometheus-client>=0.20",
 ]
 
 [project.scripts]

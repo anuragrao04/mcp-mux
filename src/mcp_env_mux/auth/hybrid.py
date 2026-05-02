@@ -12,6 +12,10 @@ from fastmcp.server.auth.oauth_proxy.models import OAuthTransaction
 from fastmcp.server.auth.providers.azure import AzureProvider
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 
+from mcp_env_mux.metrics.auth import record_auth
+from mcp_env_mux.metrics.helpers import token_type_from_issuer
+from mcp_env_mux.metrics.registry import Metrics
+
 
 class HybridAzureProvider(AzureProvider):
     """AzureProvider that also accepts locally-minted bot tokens.
@@ -33,6 +37,7 @@ class HybridAzureProvider(AzureProvider):
         local_public_key_pem: str,
         local_issuer: str = "mcp-env-mux",
         local_audience: str = "mcp-env-mux",
+        metrics: Metrics | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -43,6 +48,7 @@ class HybridAzureProvider(AzureProvider):
             required_scopes=required_scopes,
             **kwargs,
         )
+        self._metrics = metrics
         self._local_verifier = JWTVerifier(
             public_key=local_public_key_pem,
             issuer=local_issuer,
@@ -134,24 +140,28 @@ class HybridAzureProvider(AzureProvider):
             unverified = pyjwt.decode(token, options={"verify_signature": False})
             iss = unverified.get("iss", "") or ""
         except Exception:
-            # Unparseable token — fall through to Azure path which will reject.
             iss = ""
+
+        token_type = token_type_from_issuer(iss)
 
         try:
             if iss == self._local_issuer:
                 access_token = await self._local_verifier.verify_token(token)
                 if access_token is None:
+                    record_auth(self._metrics, token_type=token_type, result="error", reason="invalid_token")
                     return None
-                # Bot tokens are locally trusted — grant the OAuth provider's
-                # required scopes so the upstream BearerAuth middleware does
-                # not reject with "insufficient_scope". A valid local
-                # signature is the trust anchor; scope checks at the OAuth
-                # layer are bypassed for bot principals.
                 granted_scopes = list(self.required_scopes or [])
                 if granted_scopes:
+                    record_auth(self._metrics, token_type=token_type, result="success", reason="verified")
                     return access_token.model_copy(update={"scopes": granted_scopes})
+                record_auth(self._metrics, token_type=token_type, result="success", reason="verified")
                 return access_token
-            return await super().verify_token(token)
+            access_token = await super().verify_token(token)
+            if access_token is None:
+                record_auth(self._metrics, token_type=token_type, result="error", reason="invalid_token")
+                return None
+            record_auth(self._metrics, token_type=token_type, result="success", reason="verified")
+            return access_token
         except Exception:
-            # Defensive: never raise out of verify_token.
+            record_auth(self._metrics, token_type=token_type, result="error", reason="verification_failed")
             return None

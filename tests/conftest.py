@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+from typing import TextIO
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -164,6 +165,8 @@ class ProxyProcess:
     port: int
     url: str
     config_path: Path
+    stdout_path: Path | None = None
+    stderr_path: Path | None = None
 
     def stop(self):
         self.process.send_signal(signal.SIGTERM)
@@ -184,6 +187,7 @@ def start_proxy(
     extra_args: list[str] | None = None,
     wait_for_ready: bool = True,
     env_vars: dict[str, str] | None = None,
+    capture_logs: bool = False,
 ) -> ProxyProcess:
     """
     Start the mcp-env-mux proxy as a subprocess.
@@ -204,18 +208,45 @@ def start_proxy(
 
     env = {**os.environ, **(env_vars or {})}
 
+    stdout_target: int | TextIO = subprocess.PIPE
+    stderr_target: int | TextIO = subprocess.PIPE
+    stdout_path: Path | None = None
+    stderr_path: Path | None = None
+    stdout_handle: TextIO | None = None
+    stderr_handle: TextIO | None = None
+    if capture_logs:
+        log_dir = Path(tempfile.mkdtemp(prefix="mcp-env-mux-logs-"))
+        stdout_path = log_dir / "stdout.log"
+        stderr_path = log_dir / "stderr.log"
+        stdout_handle = stdout_path.open("w")
+        stderr_handle = stderr_path.open("w")
+        stdout_target = stdout_handle
+        stderr_target = stderr_handle
+
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=stdout_target,
+        stderr=stderr_target,
         env=env,
         cwd=str(Path(__file__).resolve().parent.parent),
     )
 
+    if stdout_handle is not None:
+        stdout_handle.close()
+    if stderr_handle is not None:
+        stderr_handle.close()
+
     if wait_for_ready:
         _wait_for_port(port, timeout=10, process=proc)
 
-    return ProxyProcess(process=proc, port=port, url=url, config_path=config_path)
+    return ProxyProcess(
+        process=proc,
+        port=port,
+        url=url,
+        config_path=config_path,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+    )
 
 
 def run_test_schema(

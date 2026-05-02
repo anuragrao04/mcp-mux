@@ -6,7 +6,7 @@ Creates a FastMCP server that registers merged tools and routes incoming tool ca
 
 ## Public API
 
-### `create_proxy_server(merged_tools: list[MergedTool], clients: dict[str, Any]) -> FastMCP`
+### `create_proxy_server(merged_tools: list[MergedTool], clients: dict[str, Any], auth_config: AuthConfig | None = None, private_key: Any = None, public_key: Any = None, metrics: Metrics | None = None) -> FastMCP`
 
 Creates and returns a `FastMCP` server instance with one `FunctionTool` registered per merged tool. Each tool's handler routes calls to the appropriate backend client.
 
@@ -29,8 +29,9 @@ Returns an `async def handler(**kwargs) -> Any` that:
 2. Validates `env` against `tool.available_envs`. Raises `ValueError` if invalid.
 3. Strips `env` from the forwarded arguments.
 4. Strips parameters not supported by the target environment (any param in `tool.env_params` where the target env is not in that param's env set).
-5. Calls `clients[env].call_tool(tool.name, args)`.
-6. Returns `result.content` if the result has a `.content` attribute, otherwise returns the result as-is.
+5. Instruments the call for Prometheus metrics when enabled.
+6. Calls `clients[env].call_tool(tool.name, args)`.
+7. Returns `result.content` if the result has a `.content` attribute, otherwise returns the result as-is.
 
 This function is internal but is also imported directly by `test_proxy.py` for unit testing the routing logic without starting a server.
 
@@ -51,3 +52,4 @@ The proxy handles concurrent incoming requests via FastMCP's underlying uvicorn 
 - Raises `ValueError` if `env` is missing from the call arguments.
 - Raises `ValueError` if `env` is not in the tool's `available_envs` list.
 - Backend call errors propagate unhandled from the client.
+- When metrics are enabled, errors are also counted into normalized Prometheus error buckets.

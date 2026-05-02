@@ -129,6 +129,7 @@ Header values and selected auth values support `$VAR` substitution -- any value 
 Top-level fields:
 
 - `environments` (required) -- Map of environment name to backend configuration.
+- `metrics` (optional) -- Enables Prometheus metrics exposition and optional user-level call metrics.
 - `auth` (optional) -- Enables authentication, OAuth routes, RBAC, and token minting UI. If omitted, the proxy remains unauthenticated for backward compatibility.
 
 Environment fields:
@@ -136,6 +137,12 @@ Environment fields:
 - `url` (required) -- The MCP backend's HTTP endpoint.
 - `description` (required) -- Human-readable label shown in the merged tool's `env` parameter description.
 - `headers` (optional) -- HTTP headers sent to this backend. Use `$ENV_VAR` for secrets.
+
+Metrics fields:
+
+- `enabled` (optional, default `true`) -- Enables metrics collection and exposition.
+- `path` (optional, default `/metrics`) -- HTTP path exposing Prometheus metrics.
+- `user_level_metrics` (optional, default `false`) -- Enables per-user/per-bot total tool-call counts using the principal identity as a label.
 
 Auth fields:
 

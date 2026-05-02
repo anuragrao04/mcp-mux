@@ -15,6 +15,11 @@
       }
     }
   },
+  "metrics": {
+    "enabled": true,
+    "path": "/metrics",
+    "user_level_metrics": true
+  },
   "auth": {
     "azure": {
       "tenant_id": "125a8953-e30c-43e8-938e-2bb89c12431a",
