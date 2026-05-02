@@ -175,8 +175,8 @@ def _has_minting_role(roles: list[str], auth_config: AuthConfig) -> bool:
     return any(r in auth_config.token_minting_roles for r in roles)
 
 
-def _build_ui_callback_url(request: Request) -> str:
-    return str(request.url_for("ui_callback"))
+def _build_ui_callback_url(auth_config: AuthConfig) -> str:
+    return f"{auth_config.base_url.rstrip('/')}/ui/callback"
 
 
 def register_ui_routes(
@@ -199,7 +199,7 @@ def register_ui_routes(
     @instrument_ui_route(metrics, "ui_login")
     async def ui_login(request: Request) -> Response:
         next_path = _validate_next_path(request.query_params.get("next"))
-        callback_url = _build_ui_callback_url(request)
+        callback_url = _build_ui_callback_url(auth_config)
         authorize_url, transaction_id = await auth_provider.start_ui_authorization(
             callback_url=callback_url
         )
@@ -234,7 +234,7 @@ def register_ui_routes(
             return HTMLResponse(_render_error("Invalid login state."), status_code=400)
 
         next_path = _validate_next_path(login_claims.get("next"))
-        callback_url = _build_ui_callback_url(request)
+        callback_url = _build_ui_callback_url(auth_config)
         try:
             claims = await auth_provider.complete_ui_authorization(
                 code=code,
