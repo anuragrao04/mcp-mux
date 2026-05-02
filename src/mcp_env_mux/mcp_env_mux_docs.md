@@ -14,7 +14,9 @@ mcp_env_mux is a proxy server that multiplexes multiple MCP backend environments
 
 **merge.py** — Takes the discovered tool map and produces unified `MergedTool` definitions. Groups tools by name across environments, validates that descriptions and parameter types are consistent, injects an `env` enum parameter, and flags incompatibilities as `MergeError` or `MergeWarning` within a `MergeResult`.
 
-**proxy.py** — Builds a `FastMCP` server from merged tools. Registers a handler per tool that extracts the `env` argument, strips env-specific parameters not supported by the target backend, forwards the call to the correct client, and records Prometheus metrics when enabled.
+**proxy.py** — Builds a `FastMCP` server from merged tools. Registers a handler per tool that extracts the `env` argument, strips env-specific parameters not supported by the target backend, forwards the call to the correct client, records Prometheus metrics when enabled, and exposes operational HTTP routes such as `/healthz` and `/readyz`.
+
+**health.py** — Health and readiness routes plus readiness state shared from startup orchestration.
 
 **metrics/** — Prometheus instrumentation package. Exposes `/metrics`, records tool-call, auth, RBAC, UI, discovery, and startup metrics, and supports optional user-level tool-call tracking.
 

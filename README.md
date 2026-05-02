@@ -43,6 +43,11 @@ mcp-env-mux --config config.json
 
 When the `auth` block is present in the config, the proxy enables JWT Bearer auth, OAuth login routes, RBAC enforcement for tool calls, and a UI for minting long-lived bot tokens.
 
+The proxy also exposes operational HTTP endpoints:
+- `/metrics` (or your configured metrics path) for Prometheus metrics
+- `/healthz` for process liveness
+- `/readyz` for startup readiness
+
 > For Azure / Microsoft Entra ID setup from scratch, including **both** required redirect URIs (`/auth/callback` and `/ui/callback`), see **`AZURE_SETUP.md`**.
 
 ## Configuration
@@ -143,6 +148,8 @@ Metrics fields:
 - `enabled` (optional, default `true`) -- Enables metrics collection and exposition.
 - `path` (optional, default `/metrics`) -- HTTP path exposing Prometheus metrics.
 - `user_level_metrics` (optional, default `false`) -- Enables per-user/per-bot total tool-call counts using the principal identity as a label.
+
+Metrics include request counts, success/error counts, latency, in-flight requests, and response-size histograms at both tool and environment level. Response-size metrics use lightweight best-effort estimation for common response types rather than full JSON serialization.
 
 Auth fields:
 
@@ -271,6 +278,12 @@ When auth is enabled, the proxy exposes:
 - `GET /ui/logout`
 
 The OAuth flow uses Azure AD / Microsoft Entra ID as the identity provider.
+
+## Operational Endpoints
+
+- `GET /healthz` -- Liveness endpoint. Returns `200` when the process is up.
+- `GET /readyz` -- Readiness endpoint. Returns `200` after successful startup and `503` while startup is incomplete.
+- `GET /metrics` -- Prometheus metrics endpoint when metrics are enabled.
 
 - `/auth/*` is the OAuth/API-facing surface used by MCP/OAuth clients.
 - `/ui/*` is a browser-session-based flow used by humans to log in and mint bot tokens.

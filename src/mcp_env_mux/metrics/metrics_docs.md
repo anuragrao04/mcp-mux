@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provides Prometheus instrumentation for mcp-env-mux.
+Provides Prometheus instrumentation for mcp-env-mux, including request counts, success/error counters, latency histograms, in-flight gauges, and response-size histograms. Response-size estimation is lightweight and best-effort for common content shapes.
 
 ## Modules
 

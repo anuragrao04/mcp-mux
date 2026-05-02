@@ -8,7 +8,7 @@ Creates a FastMCP server that registers merged tools and routes incoming tool ca
 
 ### `create_proxy_server(merged_tools: list[MergedTool], clients: dict[str, Any], auth_config: AuthConfig | None = None, private_key: Any = None, public_key: Any = None, metrics: Metrics | None = None) -> FastMCP`
 
-Creates and returns a `FastMCP` server instance with one `FunctionTool` registered per merged tool. Each tool's handler routes calls to the appropriate backend client.
+Creates and returns a `FastMCP` server instance with one `FunctionTool` registered per merged tool. Each tool's handler routes calls to the appropriate backend client. The server also registers `/healthz` and `/readyz`, and registers the configured metrics endpoint when metrics are enabled.
 
 Parameters:
 - `merged_tools` — List of merged tool definitions from the merge module.

@@ -55,3 +55,58 @@ def token_type_from_issuer(issuer: str) -> str:
     if issuer:
         return "user"
     return "unknown"
+
+
+def estimate_response_size_bytes(value: Any) -> int | None:
+    if isinstance(value, bytes):
+        return len(value)
+    if isinstance(value, str):
+        return len(value.encode("utf-8"))
+    if isinstance(value, list):
+        total = 0
+        saw_known = False
+        for item in value:
+            if isinstance(item, bytes):
+                total += len(item)
+                saw_known = True
+                continue
+            if isinstance(item, str):
+                total += len(item.encode("utf-8"))
+                saw_known = True
+                continue
+
+            text = getattr(item, "text", None)
+            if isinstance(text, str):
+                total += len(text.encode("utf-8"))
+                saw_known = True
+                continue
+
+            data = getattr(item, "data", None)
+            if isinstance(data, bytes):
+                total += len(data)
+                saw_known = True
+                continue
+            if isinstance(data, str):
+                total += len(data.encode("utf-8"))
+                saw_known = True
+                continue
+
+            mime_type = getattr(item, "mimeType", None)
+            if mime_type is not None:
+                saw_known = True
+
+        if saw_known:
+            return total
+        return None
+
+    text = getattr(value, "text", None)
+    if isinstance(text, str):
+        return len(text.encode("utf-8"))
+
+    data = getattr(value, "data", None)
+    if isinstance(data, bytes):
+        return len(data)
+    if isinstance(data, str):
+        return len(data.encode("utf-8"))
+
+    return None

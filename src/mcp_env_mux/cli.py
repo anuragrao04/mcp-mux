@@ -10,6 +10,7 @@ from pathlib import Path
 
 from mcp_env_mux.config import load_config
 from mcp_env_mux.discovery import discover_all
+from mcp_env_mux.health import ReadinessState
 from mcp_env_mux.logging import configure_json_logging
 from mcp_env_mux.merge import validate_and_merge
 from mcp_env_mux.metrics import create_metrics
@@ -22,6 +23,7 @@ async def _run(args: argparse.Namespace) -> int:
     logger = logging.getLogger("mcp_env_mux")
     config = load_config(Path(args.config))
     metrics = create_metrics(config.metrics) if config.metrics is not None else None
+    readiness = ReadinessState()
 
     # Auth setup (only when auth is configured)
     private_key = None
@@ -90,7 +92,12 @@ async def _run(args: argparse.Namespace) -> int:
             private_key=private_key,
             public_key=public_key,
             metrics=metrics,
+            readiness=readiness,
         )
+        readiness.ready = True
+        readiness.reason = "ready"
+        readiness.environment_count = len(config.environments)
+        readiness.merged_tool_count = len(result.tools)
         logger.info("starting_proxy", extra={"host": args.host, "port": args.port, "stateless_http": True})
         await server.run_http_async(
             host=args.host,

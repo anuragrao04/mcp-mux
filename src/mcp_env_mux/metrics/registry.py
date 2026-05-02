@@ -15,7 +15,12 @@ class Metrics:
     tool_request_success_total: Counter
     tool_request_errors_total: Counter
     tool_request_duration_seconds: Histogram
+    tool_response_size_bytes: Histogram
     tool_requests_in_flight: Gauge
+    environment_requests_total: Counter
+    environment_request_success_total: Counter
+    environment_request_errors_total: Counter
+    environment_response_size_bytes: Histogram
     user_tool_calls_total: Counter
     auth_requests_total: Counter
     rbac_decisions_total: Counter
@@ -65,10 +70,40 @@ def create_metrics(config: MetricsConfig) -> Metrics:
             ["tool", "env", "principal_type"],
             registry=registry,
         ),
+        tool_response_size_bytes=Histogram(
+            "mcp_env_mux_tool_response_size_bytes",
+            "Serialized proxy response size per tool call in bytes.",
+            ["tool", "env", "principal_type"],
+            registry=registry,
+        ),
         tool_requests_in_flight=Gauge(
             "mcp_env_mux_tool_requests_in_flight",
             "Currently in-flight tool calls.",
             ["tool", "env"],
+            registry=registry,
+        ),
+        environment_requests_total=Counter(
+            "mcp_env_mux_environment_requests_total",
+            "Total tool call attempts by environment.",
+            ["env"],
+            registry=registry,
+        ),
+        environment_request_success_total=Counter(
+            "mcp_env_mux_environment_request_success_total",
+            "Successful tool calls by environment.",
+            ["env"],
+            registry=registry,
+        ),
+        environment_request_errors_total=Counter(
+            "mcp_env_mux_environment_request_errors_total",
+            "Failed tool calls by environment and normalized error type.",
+            ["env", "error_type"],
+            registry=registry,
+        ),
+        environment_response_size_bytes=Histogram(
+            "mcp_env_mux_environment_response_size_bytes",
+            "Serialized proxy response size by environment in bytes.",
+            ["env"],
             registry=registry,
         ),
         user_tool_calls_total=Counter(

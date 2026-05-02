@@ -11,6 +11,7 @@ from fastmcp.server.middleware.logging import StructuredLoggingMiddleware
 from fastmcp.tools.function_tool import FunctionTool
 
 from mcp_env_mux.config import AuthConfig
+from mcp_env_mux.health import ReadinessState, register_health_routes
 from mcp_env_mux.merge import MergedTool
 from mcp_env_mux.metrics.http import register_metrics_route
 from mcp_env_mux.metrics.registry import Metrics
@@ -67,6 +68,7 @@ def create_proxy_server(
     private_key: Any = None,
     public_key: Any = None,
     metrics: Metrics | None = None,
+    readiness: ReadinessState | None = None,
 ) -> FastMCP:
     """Create a FastMCP server with tools registered for routing.
 
@@ -106,6 +108,8 @@ def create_proxy_server(
     else:
         server = FastMCP("mcp-env-mux")
         server.add_middleware(StructuredLoggingMiddleware(logger=logger))
+
+    register_health_routes(server, readiness or ReadinessState())
 
     if metrics is not None and metrics.enabled:
         register_metrics_route(server, metrics)
