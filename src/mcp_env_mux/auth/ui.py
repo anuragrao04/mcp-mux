@@ -395,13 +395,16 @@ def _render_form(
 
 
 def _render_token_display(token: str, name: str) -> str:
+    token_json = json.dumps(token)
     return f"""<!DOCTYPE html>
 <html>
 <head><title>Token Minted — mcp-env-mux</title></head>
 <body>
 <h1>Token Minted for <em>{name}</em></h1>
 <p><strong>Copy this token now — it will not be shown again.</strong></p>
-<textarea rows="6" cols="80" readonly onclick="this.select()">{token}</textarea>
+<textarea id="minted-token" rows="6" cols="80" readonly onclick="this.select()">{token}</textarea>
+<br><br>
+<button type="button" onclick='navigator.clipboard.writeText({token_json}).then(() => {{ this.textContent = "Copied!"; }}).catch(() => {{ const textarea = document.getElementById("minted-token"); textarea.focus(); textarea.select(); }});'>Copy token</button>
 <br><br>
 <a href="/ui/tokens">Mint another token</a>
 </body>

@@ -164,6 +164,17 @@ Auth fields:
    - Tool calls are checked against role-based allowlists for environment and tool name.
    - A web UI can mint long-lived bot tokens for approved users.
 
+## Horizontal scaling
+
+The proxy runs FastMCP HTTP transport with `stateless_http=True`.
+
+This matters for multi-replica deployments behind a load balancer:
+- requests do not depend on replica-local MCP session affinity
+- `list_tools()` and `call_tool()` can be served by any replica
+- per-user tool visibility is derived from the presented token and in-memory merged tool metadata, not from sticky server-side MCP session state
+
+Each replica still performs backend discovery at startup and keeps its own backend client connections, so replicas should be started with the same config and auth/signing setup.
+
 ## CLI Reference
 
 ```

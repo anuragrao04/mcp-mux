@@ -16,6 +16,7 @@ from mcp_env_mux.merge import (
     MergeError,
     MergeResult,
     MergeWarning,
+    build_visible_tool_view,
     validate_and_merge,
 )
 
@@ -495,6 +496,66 @@ class TestDescriptionFormatting:
 # ===================================================================
 
 
+class TestVisibleToolRendering:
+    """Test caller-visible rendering from canonical merged tools."""
+
+    def test_partial_visibility_filters_env_enum_and_description(self):
+        tool = make_tool(
+            "query",
+            "Run a query.",
+            properties={"sql": {"type": "string"}},
+            required=["sql"],
+        )
+        discovered = {"prod": [tool], "staging": [tool]}
+
+        result = validate_and_merge(discovered, ENV_DESCRIPTIONS)
+        merged = result.tools[0]
+
+        visible = build_visible_tool_view(merged, ["staging"])
+
+        assert visible is not None
+        assert visible.input_schema["properties"]["env"]["enum"] == ["staging"]
+        assert "- staging: Pre-production." in visible.description
+        assert "- prod: Production Coralogix team." not in visible.description
+        assert "Run a query." in visible.description
+
+    def test_partial_visibility_filters_parameter_notes(self):
+        result = validate_and_merge(TestExtraParameters()._make_discovered(), ENV_DESCRIPTIONS)
+        merged = result.tools[0]
+
+        visible = build_visible_tool_view(merged, ["staging"])
+
+        assert visible is not None
+        assert "[Parameter Notes]" not in visible.description
+        assert "timeout" not in visible.description
+
+    def test_empty_visibility_returns_none(self):
+        tool = make_tool("ping", "Ping the service.", properties={}, required=[])
+        discovered = {"prod": [tool], "staging": [tool]}
+
+        result = validate_and_merge(discovered, ENV_DESCRIPTIONS)
+        merged = result.tools[0]
+
+        assert build_visible_tool_view(merged, []) is None
+
+    def test_rendering_does_not_mutate_canonical_tool(self):
+        result = validate_and_merge(TestExtraParameters()._make_discovered(), ENV_DESCRIPTIONS)
+        merged = result.tools[0]
+        original_description = merged.description
+        original_enum = list(merged.input_schema["properties"]["env"]["enum"])
+
+        visible = build_visible_tool_view(merged, ["staging"])
+
+        assert visible is not None
+        assert merged.description == original_description
+        assert merged.input_schema["properties"]["env"]["enum"] == original_enum
+
+
+# ===================================================================
+# MergeResult types
+# ===================================================================
+
+
 class TestMergeResultTypes:
     """Test the structure of MergeResult, MergeError, MergeWarning."""
 
@@ -518,9 +579,13 @@ class TestMergeResultTypes:
             input_schema={"type": "object", "properties": {"env": {"type": "string", "enum": ["prod"]}}},
             available_envs=["prod"],
             env_params={"timeout": {"prod"}},
+            base_description="Test tool.",
+            env_descriptions={"prod": "Production."},
         )
         assert merged.name == "test"
         assert merged.description == "Test tool."
+        assert merged.base_description == "Test tool."
+        assert merged.env_descriptions == {"prod": "Production."}
         assert merged.input_schema is not None
         assert merged.available_envs == ["prod"]
         assert merged.env_params == {"timeout": {"prod"}}

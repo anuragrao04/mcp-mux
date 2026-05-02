@@ -122,7 +122,11 @@ async def test_azure_token_dispatched_to_super(hybrid, monkeypatch):
         "jti": str(uuid.uuid4()),
     }
     # Sign with a throwaway HMAC; super() is stubbed so signature won't be checked here.
-    fake_token = pyjwt.encode(payload, "irrelevant-secret", algorithm="HS256")
+    fake_token = pyjwt.encode(
+        payload,
+        "this-is-a-safely-long-test-secret-key-for-hs256",
+        algorithm="HS256",
+    )
 
     access = await hybrid.verify_token(fake_token)
     assert access is sentinel
@@ -147,7 +151,11 @@ async def test_unknown_issuer_falls_through_to_super(hybrid, monkeypatch):
         "iat": int(time.time()),
         "exp": int(time.time()) + 60,
     }
-    token = pyjwt.encode(payload, "irrelevant", algorithm="HS256")
+    token = pyjwt.encode(
+        payload,
+        "this-is-a-safely-long-test-secret-key-for-hs256",
+        algorithm="HS256",
+    )
 
     access = await hybrid.verify_token(token)
     assert access is None
@@ -176,5 +184,9 @@ async def test_garbage_token_returns_none(hybrid, monkeypatch):
         "iat": int(time.time()),
         "exp": int(time.time()) + 60,
     }
-    no_iss = pyjwt.encode(payload, "irrelevant", algorithm="HS256")
+    no_iss = pyjwt.encode(
+        payload,
+        "this-is-a-safely-long-test-secret-key-for-hs256",
+        algorithm="HS256",
+    )
     assert await hybrid.verify_token(no_iss) is None

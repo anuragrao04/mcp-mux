@@ -61,6 +61,8 @@ def make_merged_tool(
         input_schema=input_schema,
         available_envs=available_envs,
         env_params=env_params,
+        base_description=description,
+        env_descriptions={env: f"{env} environment." for env in available_envs},
     )
 
 

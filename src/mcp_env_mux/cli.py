@@ -67,7 +67,7 @@ async def _run(args: argparse.Namespace) -> int:
             private_key=private_key,
             public_key=public_key,
         )
-        await server.run_http_async(host=args.host, port=args.port)
+        await server.run_http_async(host=args.host, port=args.port, stateless_http=True)
     finally:
         for client in clients.values():
             await client.__aexit__(None, None, None)

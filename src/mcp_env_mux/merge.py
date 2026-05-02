@@ -26,6 +26,8 @@ class MergedTool:
     input_schema: dict[str, Any]
     available_envs: list[str]
     env_params: dict[str, set[str]]
+    base_description: str
+    env_descriptions: dict[str, str]
 
 
 @dataclass
@@ -33,6 +35,73 @@ class MergeResult:
     tools: list[MergedTool] = field(default_factory=list)
     errors: list[MergeError] = field(default_factory=list)
     warnings: list[MergeWarning] = field(default_factory=list)
+
+
+def _build_description(
+    base_description: str,
+    visible_envs: list[str],
+    env_descriptions: dict[str, str],
+    env_params: dict[str, set[str]],
+) -> str:
+    desc_parts = ["[Environments]"]
+    for env in visible_envs:
+        env_desc = env_descriptions.get(env, "")
+        desc_parts.append(f"- {env}: {env_desc}")
+
+    visible_param_notes: list[str] = []
+    for param, param_env_set in sorted(env_params.items()):
+        visible_param_envs = [env for env in visible_envs if env in param_env_set]
+        if visible_param_envs:
+            visible_param_notes.append(
+                f"- {param}: Only supported on {', '.join(visible_param_envs)}."
+            )
+
+    if visible_param_notes:
+        desc_parts.append("")
+        desc_parts.append("[Parameter Notes]")
+        desc_parts.extend(visible_param_notes)
+
+    desc_parts.append("")
+    desc_parts.append(base_description)
+    return "\n".join(desc_parts)
+
+
+def build_visible_tool_view(tool: MergedTool, visible_envs: list[str]) -> MergedTool | None:
+    visible_envs = [env for env in tool.available_envs if env in set(visible_envs)]
+    if not visible_envs:
+        return None
+
+    properties = {
+        **tool.input_schema.get("properties", {}),
+        "env": {
+            **tool.input_schema.get("properties", {}).get("env", {}),
+            "enum": visible_envs,
+        },
+    }
+    schema = {
+        **tool.input_schema,
+        "properties": properties,
+        "required": list(tool.input_schema.get("required", [])),
+    }
+    filtered_env_params = {
+        param: {env for env in envs if env in visible_envs}
+        for param, envs in tool.env_params.items()
+        if any(env in visible_envs for env in envs)
+    }
+    return MergedTool(
+        name=tool.name,
+        description=_build_description(
+            tool.base_description,
+            visible_envs,
+            tool.env_descriptions,
+            filtered_env_params,
+        ),
+        input_schema=schema,
+        available_envs=visible_envs,
+        env_params=filtered_env_params,
+        base_description=tool.base_description,
+        env_descriptions={env: tool.env_descriptions.get(env, "") for env in visible_envs},
+    )
 
 
 def validate_and_merge(
@@ -142,21 +211,12 @@ def validate_and_merge(
         }
         merged_required.append("env")
 
-        # Build description
-        desc_parts = ["[Environments]"]
-        for env in envs:
-            env_desc = env_descriptions.get(env, "")
-            desc_parts.append(f"- {env}: {env_desc}")
-
-        if env_specific_params:
-            desc_parts.append("")
-            desc_parts.append("[Parameter Notes]")
-            for param, param_env_set in sorted(env_specific_params.items()):
-                desc_parts.append(f"- {param}: Only supported on {', '.join(sorted(param_env_set))}.")
-
-        desc_parts.append("")
-        desc_parts.append(original_description)
-        merged_description = "\n".join(desc_parts)
+        merged_description = _build_description(
+            original_description,
+            envs,
+            {env: env_descriptions.get(env, "") for env in envs},
+            env_specific_params,
+        )
 
         merged_schema = {
             "type": "object",
@@ -170,6 +230,8 @@ def validate_and_merge(
             input_schema=merged_schema,
             available_envs=envs,
             env_params=env_specific_params,
+            base_description=original_description,
+            env_descriptions={env: env_descriptions.get(env, "") for env in envs},
         ))
 
     return result

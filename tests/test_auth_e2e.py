@@ -20,6 +20,10 @@ from fastmcp.exceptions import ToolError
 from conftest import start_backend, start_proxy, write_config
 
 
+def _find_tool(tools, name: str):
+    return next((t for t in tools if t.name == name), None)
+
+
 # ---------------------------------------------------------------------------
 # Auth-config helper
 # ---------------------------------------------------------------------------
@@ -262,7 +266,150 @@ async def test_bot_token_allows_access(tmp_path, keypair):
 
 
 # ---------------------------------------------------------------------------
-# 5. Bot token with wrong role gets RBAC denial
+# 5. Bot token list_tools is filtered by env authorization
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_tools_filters_envs_per_user(tmp_path, keypair):
+    _, _, key_file = keypair
+    prod = await start_backend(
+        "prod-be",
+        {
+            "query": {
+                "description": "Run a query.",
+                "params": {"sql": {"type": str, "required": True}, "timeout": {"type": int, "required": False, "default": None}},
+                "handler": lambda kw: f"prod:{kw['sql']}",
+            }
+        },
+    )
+    staging = await start_backend(
+        "staging-be",
+        {
+            "query": {
+                "description": "Run a query.",
+                "params": {"sql": {"type": str, "required": True}},
+                "handler": lambda kw: f"staging:{kw['sql']}",
+            }
+        },
+    )
+    roles_cfg = {
+        "admin": {"allowed_envs": {"*": ["*"]}},
+        "staging-reader": {"allowed_envs": {"staging": ["query"]}},
+    }
+    config = {
+        "environments": {
+            "prod": {"description": "Production environment.", "url": prod.url},
+            "staging": {"description": "Staging environment.", "url": staging.url},
+        },
+        "auth": {
+            "azure": {
+                "tenant_id": "test-tenant",
+                "client_id": "test-client",
+                "client_secret": "test-secret",
+            },
+            "base_url": "http://localhost:8080",
+            "required_scopes": ["access_as_user"],
+            "signing_key_file": key_file,
+            "token_minting_roles": ["admin"],
+            "roles": roles_cfg,
+        },
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config))
+    proxy = start_proxy(config_path)
+    token = _make_bot_token(keypair, ["staging-reader"])
+    try:
+        async with Client(proxy.url, auth=token) as client:
+            tools = await client.list_tools()
+            tool = _find_tool(tools, "query")
+            assert tool is not None
+            assert tool.inputSchema["properties"]["env"]["enum"] == ["staging"]
+            assert "Staging environment." in tool.description
+            assert "Production environment." not in tool.description
+            assert "timeout" not in tool.description
+
+            result = await client.call_tool("query", {"env": "staging", "sql": "select 1"})
+            assert "staging:select 1" in result.content[0].text
+
+            with pytest.raises(ToolError):
+                await client.call_tool("query", {"env": "prod", "sql": "select 1"})
+    finally:
+        proxy.stop()
+
+
+
+@pytest.mark.asyncio
+async def test_list_tools_views_do_not_leak_between_callers(tmp_path, keypair):
+    _, _, key_file = keypair
+    prod = await start_backend(
+        "prod-view-be",
+        {
+            "query": {
+                "description": "Run a query.",
+                "params": {"sql": {"type": str, "required": True}, "timeout": {"type": int, "required": False, "default": None}},
+                "handler": lambda kw: f"prod:{kw['sql']}",
+            }
+        },
+    )
+    staging = await start_backend(
+        "staging-view-be",
+        {
+            "query": {
+                "description": "Run a query.",
+                "params": {"sql": {"type": str, "required": True}},
+                "handler": lambda kw: f"staging:{kw['sql']}",
+            }
+        },
+    )
+    roles_cfg = {
+        "admin": {"allowed_envs": {"*": ["*"]}},
+        "staging-reader": {"allowed_envs": {"staging": ["query"]}},
+    }
+    config = {
+        "environments": {
+            "prod": {"description": "Production environment.", "url": prod.url},
+            "staging": {"description": "Staging environment.", "url": staging.url},
+        },
+        "auth": {
+            "azure": {
+                "tenant_id": "test-tenant",
+                "client_id": "test-client",
+                "client_secret": "test-secret",
+            },
+            "base_url": "http://localhost:8080",
+            "required_scopes": ["access_as_user"],
+            "signing_key_file": key_file,
+            "token_minting_roles": ["admin"],
+            "roles": roles_cfg,
+        },
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config))
+    proxy = start_proxy(config_path)
+    staging_token = _make_bot_token(keypair, ["staging-reader"], name="staging-bot")
+    admin_token = _make_bot_token(keypair, ["admin"], name="admin-bot")
+    try:
+        async with Client(proxy.url, auth=staging_token) as staging_client:
+            staging_tools = await staging_client.list_tools()
+            staging_tool = _find_tool(staging_tools, "query")
+            assert staging_tool is not None
+            assert staging_tool.inputSchema["properties"]["env"]["enum"] == ["staging"]
+            assert "Production environment." not in staging_tool.description
+
+        async with Client(proxy.url, auth=admin_token) as admin_client:
+            admin_tools = await admin_client.list_tools()
+            admin_tool = _find_tool(admin_tools, "query")
+            assert admin_tool is not None
+            assert admin_tool.inputSchema["properties"]["env"]["enum"] == ["prod", "staging"]
+            assert "Production environment." in admin_tool.description
+            assert "Staging environment." in admin_tool.description
+            assert "timeout" in admin_tool.description
+    finally:
+        proxy.stop()
+
+
+# ---------------------------------------------------------------------------
+# 6. Bot token with wrong role gets RBAC denial
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio

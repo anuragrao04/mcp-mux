@@ -250,6 +250,92 @@ class TestToolCallRouting:
 
 
 # ===================================================================
+# Test: Horizontal scaling / stateless HTTP behavior
+# ===================================================================
+
+
+class TestHorizontalScalingBehavior:
+    """Verify proxy requests are safe without replica-local MCP session affinity."""
+
+    async def test_repeated_fresh_clients_work_against_same_proxy(self, tmp_path):
+        backend = await start_backend(
+            "stateless-be",
+            {
+                "echo": tool_def(
+                    description="Echo a message.",
+                    params={"msg": {"type": str, "required": True}},
+                    handler=lambda kw: json.dumps({"echoed": kw["msg"]}),
+                )
+            },
+        )
+        config_path = write_config(
+            {
+                "prod": {
+                    "description": "Production environment.",
+                    "url": backend.url,
+                }
+            },
+            tmp_path,
+        )
+
+        proxy = start_proxy(config_path)
+        try:
+            for value in ("one", "two", "three"):
+                async with Client(proxy.url) as client:
+                    tools = await client.list_tools()
+                    tool = find_tool(tools, "echo")
+                    assert tool is not None
+                    result = await client.call_tool("echo", {"env": "prod", "msg": value})
+                    data = json.loads(result.content[0].text)
+                    assert data["echoed"] == value
+        finally:
+            proxy.stop()
+
+    async def test_multiple_proxy_replicas_behave_identically(self, tmp_path):
+        backend = await start_backend(
+            "replica-be",
+            {
+                "echo": tool_def(
+                    description="Echo a message.",
+                    params={"msg": {"type": str, "required": True}},
+                    handler=lambda kw: json.dumps({"echoed": kw["msg"]}),
+                )
+            },
+        )
+        config_path = write_config(
+            {
+                "prod": {
+                    "description": "Production environment.",
+                    "url": backend.url,
+                }
+            },
+            tmp_path,
+        )
+
+        proxy_a = start_proxy(config_path)
+        proxy_b = start_proxy(config_path)
+        try:
+            async with Client(proxy_a.url) as client_a:
+                tools_a = await client_a.list_tools()
+                tool_a = find_tool(tools_a, "echo")
+                assert tool_a is not None
+                assert get_input_schema(tool_a)["properties"]["env"]["enum"] == ["prod"]
+                result_a = await client_a.call_tool("echo", {"env": "prod", "msg": "from-a"})
+                assert json.loads(result_a.content[0].text)["echoed"] == "from-a"
+
+            async with Client(proxy_b.url) as client_b:
+                tools_b = await client_b.list_tools()
+                tool_b = find_tool(tools_b, "echo")
+                assert tool_b is not None
+                assert get_input_schema(tool_b)["properties"]["env"]["enum"] == ["prod"]
+                result_b = await client_b.call_tool("echo", {"env": "prod", "msg": "from-b"})
+                assert json.loads(result_b.content[0].text)["echoed"] == "from-b"
+        finally:
+            proxy_a.stop()
+            proxy_b.stop()
+
+
+# ===================================================================
 # Test: Schema mismatch detection
 # ===================================================================
 

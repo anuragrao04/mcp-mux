@@ -79,7 +79,7 @@ def create_proxy_server(
         server = FastMCP("mcp-env-mux", auth=auth)
 
         register_ui_routes(server, auth_config, private_key, auth)
-        server.add_middleware(RBACMiddleware(auth_config.roles))
+        server.add_middleware(RBACMiddleware(auth_config.roles, {tool.name: tool for tool in merged_tools}))
     else:
         server = FastMCP("mcp-env-mux")
 

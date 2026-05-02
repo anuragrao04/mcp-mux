@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from types import SimpleNamespace
+
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 from mcp_env_mux.auth.rbac import is_allowed
 from mcp_env_mux.config import RoleConfig
+from mcp_env_mux.merge import MergedTool, build_visible_tool_view
 
 
 class RBACMiddleware(Middleware):
@@ -17,8 +21,54 @@ class RBACMiddleware(Middleware):
     ``ToolError`` on denial.
     """
 
-    def __init__(self, role_definitions: dict[str, RoleConfig]) -> None:
+    def __init__(self, role_definitions: dict[str, RoleConfig], merged_tools: dict[str, MergedTool] | None = None) -> None:
         self.role_definitions = role_definitions
+        self.merged_tools = merged_tools or {}
+
+    def _get_roles(self) -> list[str]:
+        from fastmcp.server.dependencies import get_access_token  # type: ignore[import]
+
+        token = get_access_token()
+        return token.claims.get("roles", []) if token else []
+
+    def _visible_envs_for_tool(self, roles: list[str], tool: MergedTool) -> list[str]:
+        return [
+            env for env in tool.available_envs
+            if is_allowed(roles, self.role_definitions, env, tool.name)
+        ]
+
+    async def on_list_tools(self, context: MiddlewareContext, call_next):  # type: ignore[override]
+        tools = await call_next(context)
+        if not self.merged_tools:
+            return tools
+
+        roles = self._get_roles()
+        filtered_tools = []
+        for tool in tools:
+            merged = self.merged_tools.get(tool.name)
+            if merged is None:
+                filtered_tools.append(tool)
+                continue
+
+            visible_envs = self._visible_envs_for_tool(roles, merged)
+            visible_tool = build_visible_tool_view(merged, visible_envs)
+            if visible_tool is None:
+                continue
+
+            cloned = deepcopy(tool)
+            cloned.description = visible_tool.description
+            if hasattr(cloned, "inputSchema"):
+                cloned.inputSchema = visible_tool.input_schema
+            elif hasattr(cloned, "parameters"):
+                cloned.parameters = visible_tool.input_schema
+            else:
+                cloned = SimpleNamespace(
+                    name=tool.name,
+                    description=visible_tool.description,
+                    inputSchema=visible_tool.input_schema,
+                )
+            filtered_tools.append(cloned)
+        return filtered_tools
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]
         tool_name = context.message.name
@@ -29,10 +79,7 @@ class RBACMiddleware(Middleware):
             # Tool has no env parameter — let it through (handler will error)
             return await call_next(context)
 
-        from fastmcp.server.dependencies import get_access_token  # type: ignore[import]
-
-        token = get_access_token()
-        roles = token.claims.get("roles", []) if token else []
+        roles = self._get_roles()
 
         if not is_allowed(roles, self.role_definitions, env, tool_name):
             from fastmcp.exceptions import ToolError  # type: ignore[import]
