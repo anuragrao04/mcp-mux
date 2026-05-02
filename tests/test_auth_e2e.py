@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 import pytest
@@ -300,12 +300,11 @@ async def test_bot_token_wrong_role_returns_403(tmp_path, keypair):
 
 
 # ---------------------------------------------------------------------------
-# 6. UI requires token
+# 6. UI redirects to login when unauthenticated
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_ui_requires_token(tmp_path, keypair):
-    """GET /ui/tokens without a Bearer returns 401."""
+async def test_ui_redirects_to_login_when_unauthenticated(tmp_path, keypair):
     _, _, key_file = keypair
     backend = await start_backend(
         "ui-be",
@@ -318,20 +317,172 @@ async def test_ui_requires_token(tmp_path, keypair):
     proxy = start_proxy(config_path)
     try:
         base = f"http://127.0.0.1:{proxy.port}"
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=False) as client:
             r = await client.get(f"{base}/ui/tokens", timeout=10)
-            assert r.status_code == 401
+            assert r.status_code in (302, 307)
+            assert r.headers["location"].startswith("/ui/login?next=%2Fui%2Ftokens")
     finally:
         proxy.stop()
 
 
 # ---------------------------------------------------------------------------
-# 7. UI requires minting role
+# 7. UI login redirects to Azure authorize URL
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_ui_requires_minting_role(tmp_path, keypair):
-    """GET /ui/tokens with a non-minting-role bot token returns 403."""
+async def test_ui_login_redirects_to_azure_authorize(tmp_path, keypair):
+    _, _, key_file = keypair
+    backend = await start_backend(
+        "ui-login-be",
+        {"tool": {"description": "T", "params": {}, "handler": lambda kw: "ok"}},
+    )
+    roles_cfg = {"admin": {"allowed_envs": {"*": ["*"]}}}
+    config_path = _write_auth_config(
+        tmp_path, backend.url, key_file, roles_cfg, ["admin"]
+    )
+    proxy = start_proxy(config_path)
+    try:
+        base = f"http://127.0.0.1:{proxy.port}"
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            r = await client.get(f"{base}/ui/login?next=/ui/tokens", timeout=10)
+            assert r.status_code in (302, 307)
+            location = r.headers["location"]
+            parsed = urlparse(location)
+            assert parsed.netloc == "login.microsoftonline.com"
+            qs = parse_qs(parsed.query)
+            assert qs["redirect_uri"] == [f"{base}/ui/callback"]
+            assert "state" in qs
+            scopes = qs["scope"][0].split()
+            assert "api://test-client/access_as_user" in scopes
+            assert "offline_access" in scopes
+    finally:
+        proxy.stop()
+
+
+# ---------------------------------------------------------------------------
+# 8. UI callback sets session and returns to form
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ui_callback_sets_session_and_renders_form(tmp_path, keypair):
+    _, _, key_file = keypair
+    backend = await start_backend(
+        "ui-callback-be",
+        {"tool": {"description": "T", "params": {}, "handler": lambda kw: "ok"}},
+    )
+    roles_cfg = {
+        "admin": {"allowed_envs": {"*": ["*"]}},
+        "readonly": {"allowed_envs": {"*": ["logs*"]}},
+    }
+    config_path = _write_auth_config(
+        tmp_path, backend.url, key_file, roles_cfg, ["admin"]
+    )
+    proxy = start_proxy(
+        config_path,
+        env_vars={
+            "MCP_ENV_MUX_TEST_UI_AUTH_SUBJECT": "admin@example.com",
+            "MCP_ENV_MUX_TEST_UI_AUTH_ROLES": "admin",
+        },
+    )
+    try:
+        base = f"http://127.0.0.1:{proxy.port}"
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            login = await client.get(f"{base}/ui/login?next=/ui/tokens", timeout=10)
+            location = login.headers["location"]
+            state = parse_qs(urlparse(location).query)["state"][0]
+
+            cb = await client.get(
+                f"{base}/ui/callback?code=fake-code&state={state}", timeout=10
+            )
+            assert cb.status_code in (302, 307)
+            assert cb.headers["location"] == "/ui/tokens"
+            assert any(cookie.name == "mcp_env_mux_ui_session" for cookie in client.cookies.jar)
+            assert not any(
+                cookie.name == "mcp_env_mux_ui_login" for cookie in client.cookies.jar
+            )
+
+            form = await client.get(f"{base}/ui/tokens", timeout=10)
+            assert form.status_code == 200
+            assert "Mint Bot Token" in form.text
+            assert "admin@example.com" in form.text
+    finally:
+        proxy.stop()
+
+
+# ---------------------------------------------------------------------------
+# 9. UI callback rejects missing or mismatched login binding
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ui_callback_rejects_missing_login_cookie(tmp_path, keypair):
+    _, _, key_file = keypair
+    backend = await start_backend(
+        "ui-missing-cookie-be",
+        {"tool": {"description": "T", "params": {}, "handler": lambda kw: "ok"}},
+    )
+    roles_cfg = {"admin": {"allowed_envs": {"*": ["*"]}}}
+    config_path = _write_auth_config(
+        tmp_path, backend.url, key_file, roles_cfg, ["admin"]
+    )
+    proxy = start_proxy(
+        config_path,
+        env_vars={
+            "MCP_ENV_MUX_TEST_UI_AUTH_SUBJECT": "admin@example.com",
+            "MCP_ENV_MUX_TEST_UI_AUTH_ROLES": "admin",
+        },
+    )
+    try:
+        base = f"http://127.0.0.1:{proxy.port}"
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            login = await client.get(f"{base}/ui/login?next=/ui/tokens", timeout=10)
+            state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+            client.cookies.clear()
+            cb = await client.get(
+                f"{base}/ui/callback?code=fake-code&state={state}", timeout=10
+            )
+            assert cb.status_code == 400
+            assert "Login session expired" in cb.text or "Invalid login state" in cb.text
+    finally:
+        proxy.stop()
+
+
+@pytest.mark.asyncio
+async def test_ui_callback_rejects_mismatched_state(tmp_path, keypair):
+    _, _, key_file = keypair
+    backend = await start_backend(
+        "ui-mismatch-state-be",
+        {"tool": {"description": "T", "params": {}, "handler": lambda kw: "ok"}},
+    )
+    roles_cfg = {"admin": {"allowed_envs": {"*": ["*"]}}}
+    config_path = _write_auth_config(
+        tmp_path, backend.url, key_file, roles_cfg, ["admin"]
+    )
+    proxy = start_proxy(
+        config_path,
+        env_vars={
+            "MCP_ENV_MUX_TEST_UI_AUTH_SUBJECT": "admin@example.com",
+            "MCP_ENV_MUX_TEST_UI_AUTH_ROLES": "admin",
+        },
+    )
+    try:
+        base = f"http://127.0.0.1:{proxy.port}"
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            await client.get(f"{base}/ui/login?next=/ui/tokens", timeout=10)
+            cb = await client.get(
+                f"{base}/ui/callback?code=fake-code&state=wrong-state", timeout=10
+            )
+            assert cb.status_code == 400
+            assert "Invalid login state" in cb.text
+    finally:
+        proxy.stop()
+
+
+# ---------------------------------------------------------------------------
+# 10. UI requires minting role from session
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ui_requires_minting_role_from_session(tmp_path, keypair):
     _, _, key_file = keypair
     backend = await start_backend(
         "ui-role-be",
@@ -344,28 +495,31 @@ async def test_ui_requires_minting_role(tmp_path, keypair):
     config_path = _write_auth_config(
         tmp_path, backend.url, key_file, roles_cfg, ["admin"]
     )
-    proxy = start_proxy(config_path)
-    token = _make_bot_token(keypair, ["readonly"])
+    proxy = start_proxy(
+        config_path,
+        env_vars={
+            "MCP_ENV_MUX_TEST_UI_AUTH_SUBJECT": "reader@example.com",
+            "MCP_ENV_MUX_TEST_UI_AUTH_ROLES": "readonly",
+        },
+    )
     try:
         base = f"http://127.0.0.1:{proxy.port}"
-        async with httpx.AsyncClient() as client:
-            r = await client.get(
-                f"{base}/ui/tokens",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-            )
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            login = await client.get(f"{base}/ui/login?next=/ui/tokens", timeout=10)
+            state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+            await client.get(f"{base}/ui/callback?code=fake-code&state={state}", timeout=10)
+            r = await client.get(f"{base}/ui/tokens", timeout=10)
             assert r.status_code == 403
     finally:
         proxy.stop()
 
 
 # ---------------------------------------------------------------------------
-# 8. UI mints a bot token
+# 11. UI requires minting role from session
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_ui_mints_bot_token(tmp_path, keypair):
-    """POST /ui/tokens with a minting-role bot token returns a fresh JWT."""
+async def test_ui_mints_bot_token_from_session(tmp_path, keypair):
     _, public, key_file = keypair
     backend = await start_backend(
         "mint-be",
@@ -378,36 +532,36 @@ async def test_ui_mints_bot_token(tmp_path, keypair):
     config_path = _write_auth_config(
         tmp_path, backend.url, key_file, roles_cfg, ["admin"], token_max_expiry_days=90
     )
-    proxy = start_proxy(config_path)
-    minter_token = _make_bot_token(keypair, ["admin"], name="minter")
+    proxy = start_proxy(
+        config_path,
+        env_vars={
+            "MCP_ENV_MUX_TEST_UI_AUTH_SUBJECT": "minter@example.com",
+            "MCP_ENV_MUX_TEST_UI_AUTH_ROLES": "admin",
+        },
+    )
     try:
         base = f"http://127.0.0.1:{proxy.port}"
         form = {"name": "new-bot", "roles": "readonly", "expiry_days": "7"}
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            login = await client.get(f"{base}/ui/login?next=/ui/tokens", timeout=10)
+            state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+            await client.get(f"{base}/ui/callback?code=fake-code&state={state}", timeout=10)
             r = await client.post(
                 f"{base}/ui/tokens",
                 content=urlencode(form),
-                headers={
-                    "Authorization": f"Bearer {minter_token}",
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=10,
             )
             assert r.status_code == 200, r.text
 
-        # Body must contain a JWT (3 base64 segments separated by dots).
-        # Extract from the textarea.
         body = r.text
         import re
-
         m = re.search(r"<textarea[^>]*>([^<]+)</textarea>", body)
         assert m, f"No textarea in response: {body[:500]}"
         new_token = m.group(1).strip()
         assert new_token.count(".") == 2
 
-        # Verify the minted token's claims
         import jwt as pyjwt
-
         claims = pyjwt.decode(
             new_token,
             public,
@@ -417,7 +571,45 @@ async def test_ui_mints_bot_token(tmp_path, keypair):
         )
         assert claims["sub"] == "new-bot"
         assert "readonly" in claims["roles"]
-        # Expiry math: 7 days
+        assert claims["created_by"] == "minter@example.com"
         assert claims["exp"] - claims["iat"] == 7 * 86400
+    finally:
+        proxy.stop()
+
+
+# ---------------------------------------------------------------------------
+# 12. UI logout clears the session cookie
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ui_logout_clears_session(tmp_path, keypair):
+    _, _, key_file = keypair
+    backend = await start_backend(
+        "ui-logout-be",
+        {"tool": {"description": "T", "params": {}, "handler": lambda kw: "ok"}},
+    )
+    roles_cfg = {"admin": {"allowed_envs": {"*": ["*"]}}}
+    config_path = _write_auth_config(
+        tmp_path, backend.url, key_file, roles_cfg, ["admin"]
+    )
+    proxy = start_proxy(
+        config_path,
+        env_vars={
+            "MCP_ENV_MUX_TEST_UI_AUTH_SUBJECT": "admin@example.com",
+            "MCP_ENV_MUX_TEST_UI_AUTH_ROLES": "admin",
+        },
+    )
+    try:
+        base = f"http://127.0.0.1:{proxy.port}"
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            login = await client.get(f"{base}/ui/login?next=/ui/tokens", timeout=10)
+            state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+            await client.get(f"{base}/ui/callback?code=fake-code&state={state}", timeout=10)
+            assert any(cookie.name == "mcp_env_mux_ui_session" for cookie in client.cookies.jar)
+
+            logout = await client.get(f"{base}/ui/logout", timeout=10)
+            assert logout.status_code in (302, 307)
+            assert logout.headers["location"] == "/ui/tokens"
+            assert not any(cookie.name == "mcp_env_mux_ui_session" for cookie in client.cookies.jar)
     finally:
         proxy.stop()

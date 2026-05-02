@@ -2,51 +2,179 @@
 
 from __future__ import annotations
 
+import json
+import time
 from typing import Any
+from urllib.parse import quote
 
+import jwt
+from cryptography.hazmat.primitives import serialization
 from fastmcp import FastMCP
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, Response
+from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from mcp_env_mux.auth.hybrid import HybridAzureProvider
 from mcp_env_mux.auth.tokens import create_bot_token
 from mcp_env_mux.config import AuthConfig
 
+_UI_SESSION_COOKIE = "mcp_env_mux_ui_session"
+_UI_LOGIN_COOKIE = "mcp_env_mux_ui_login"
+_UI_SESSION_ISSUER = "mcp-env-mux-ui"
+_UI_SESSION_AUDIENCE = "mcp-env-mux-ui"
+_UI_SESSION_TTL_SECONDS = 3600
 
-def _extract_bearer(request: Request) -> str | None:
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        return auth[7:].strip()
-    return None
+
+def _validate_next_path(next_value: str | None) -> str:
+    if not next_value:
+        return "/ui/tokens"
+    if not next_value.startswith("/"):
+        return "/ui/tokens"
+    if next_value.startswith("//"):
+        return "/ui/tokens"
+    return next_value
 
 
-async def _verify_minting_access(
-    token: str,
-    auth_provider: HybridAzureProvider,
-    auth_config: AuthConfig,
-) -> tuple[str, list[str]] | None:
-    """Verify token via the auth provider and check minting role.
+def _create_ui_session_token(
+    *,
+    private_key: Any,
+    subject: str,
+    roles: list[str],
+    expires_in_seconds: int = _UI_SESSION_TTL_SECONDS,
+) -> str:
+    now = int(time.time())
+    payload = {
+        "sub": subject,
+        "roles": roles,
+        "type": "ui_session",
+        "iss": _UI_SESSION_ISSUER,
+        "aud": _UI_SESSION_AUDIENCE,
+        "iat": now,
+        "exp": now + expires_in_seconds,
+    }
+    return jwt.encode(payload, private_key, algorithm="RS256")
 
-    Returns (subject, roles) on success, None on failure.
-    """
-    access_token = await auth_provider.verify_token(token)
-    if access_token is None:
+
+def _load_ui_session(token: str, public_key_pem: str) -> dict[str, Any] | None:
+    try:
+        claims = jwt.decode(
+            token,
+            public_key_pem,
+            algorithms=["RS256"],
+            audience=_UI_SESSION_AUDIENCE,
+            issuer=_UI_SESSION_ISSUER,
+        )
+    except Exception:
         return None
-
-    claims = getattr(access_token, "claims", None) or {}
-    roles: list[str] = claims.get("roles", []) or []
-
-    # Must hold at least one minting role
-    if not any(r in auth_config.token_minting_roles for r in roles):
+    if claims.get("type") != "ui_session":
         return None
+    return claims
 
-    subject = (
-        claims.get("preferred_username")
-        or claims.get("email")
-        or claims.get("sub")
-        or "unknown"
+
+def _extract_ui_session(request: Request) -> str | None:
+    return request.cookies.get(_UI_SESSION_COOKIE)
+
+
+def _resolve_ui_principal(request: Request, public_key_pem: str) -> tuple[str, list[str]] | None:
+    session_token = _extract_ui_session(request)
+    if not session_token:
+        return None
+    claims = _load_ui_session(session_token, public_key_pem)
+    if claims is None:
+        return None
+    roles = claims.get("roles", []) or []
+    subject = claims.get("sub") or "unknown"
+    return str(subject), list(roles)
+
+
+def _set_ui_session_cookie(response: Response, session_token: str, secure: bool) -> None:
+    response.set_cookie(
+        _UI_SESSION_COOKIE,
+        session_token,
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+        max_age=_UI_SESSION_TTL_SECONDS,
+        path="/",
     )
-    return subject, roles
+
+
+def _clear_ui_session_cookie(response: Response, secure: bool) -> None:
+    response.delete_cookie(
+        _UI_SESSION_COOKIE,
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+        path="/",
+    )
+
+
+def _set_ui_login_cookie(response: Response, login_token: str, secure: bool) -> None:
+    response.set_cookie(
+        _UI_LOGIN_COOKIE,
+        login_token,
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+        max_age=600,
+        path="/ui",
+    )
+
+
+def _clear_ui_login_cookie(response: Response, secure: bool) -> None:
+    response.delete_cookie(
+        _UI_LOGIN_COOKIE,
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+        path="/ui",
+    )
+
+
+def _create_ui_login_token(
+    private_key: Any,
+    transaction_id: str,
+    next_path: str,
+    expires_in_seconds: int = 600,
+) -> str:
+    now = int(time.time())
+    payload = {
+        "type": "ui_login",
+        "txn_id": transaction_id,
+        "next": next_path,
+        "iss": _UI_SESSION_ISSUER,
+        "aud": _UI_SESSION_AUDIENCE,
+        "iat": now,
+        "exp": now + expires_in_seconds,
+    }
+    return jwt.encode(payload, private_key, algorithm="RS256")
+
+
+def _load_ui_login_token(token: str, public_key_pem: str) -> dict[str, Any] | None:
+    try:
+        claims = jwt.decode(
+            token,
+            public_key_pem,
+            algorithms=["RS256"],
+            audience=_UI_SESSION_AUDIENCE,
+            issuer=_UI_SESSION_ISSUER,
+        )
+    except Exception:
+        return None
+    if claims.get("type") != "ui_login":
+        return None
+    return claims
+
+
+def _wants_secure_cookies(auth_config: AuthConfig) -> bool:
+    return auth_config.base_url.startswith("https://")
+
+
+def _has_minting_role(roles: list[str], auth_config: AuthConfig) -> bool:
+    return any(r in auth_config.token_minting_roles for r in roles)
+
+
+def _build_ui_callback_url(request: Request) -> str:
+    return str(request.url_for("ui_callback"))
 
 
 def register_ui_routes(
@@ -58,39 +186,99 @@ def register_ui_routes(
     """Register token minting UI routes on the FastMCP server."""
 
     available_roles = list(auth_config.roles.keys())
+    public_key_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("utf-8")
+    secure_cookies = _wants_secure_cookies(auth_config)
 
-    # -----------------------------------------------------------------------
-    # GET /ui/tokens — show the minting form
-    # -----------------------------------------------------------------------
+    @server.custom_route("/ui/login", methods=["GET"], name="ui_login")
+    async def ui_login(request: Request) -> Response:
+        next_path = _validate_next_path(request.query_params.get("next"))
+        callback_url = _build_ui_callback_url(request)
+        authorize_url, transaction_id = await auth_provider.start_ui_authorization(
+            callback_url=callback_url
+        )
+        login_token = _create_ui_login_token(private_key, transaction_id, next_path)
+        response = RedirectResponse(authorize_url, status_code=302)
+        _set_ui_login_cookie(response, login_token, secure_cookies)
+        return response
+
+    @server.custom_route("/ui/callback", methods=["GET"], name="ui_callback")
+    async def ui_callback(request: Request) -> Response:
+        if request.query_params.get("error"):
+            return HTMLResponse(
+                _render_error(f"Azure login failed: {request.query_params.get('error')}"),
+                status_code=400,
+            )
+
+        code = request.query_params.get("code")
+        state = request.query_params.get("state")
+        login_token = request.cookies.get(_UI_LOGIN_COOKIE)
+        if not code or not state or not login_token:
+            return HTMLResponse(_render_error("Invalid login state."), status_code=400)
+
+        login_claims = _load_ui_login_token(login_token, public_key_pem)
+        if login_claims is None:
+            return HTMLResponse(_render_error("Login session expired."), status_code=400)
+        if login_claims.get("txn_id") != state:
+            return HTMLResponse(_render_error("Invalid login state."), status_code=400)
+
+        next_path = _validate_next_path(login_claims.get("next"))
+        callback_url = _build_ui_callback_url(request)
+        try:
+            claims = await auth_provider.complete_ui_authorization(
+                code=code,
+                state=state,
+                callback_url=callback_url,
+            )
+        except ValueError as exc:
+            return HTMLResponse(_render_error(str(exc)), status_code=400)
+        except Exception as exc:
+            return HTMLResponse(_render_error(f"Azure token exchange failed: {exc}"), status_code=500)
+
+        subject = (
+            claims.get("preferred_username")
+            or claims.get("email")
+            or claims.get("sub")
+            or "unknown"
+        )
+        roles: list[str] = claims.get("roles", []) or []
+        session_token = _create_ui_session_token(
+            private_key=private_key,
+            subject=str(subject),
+            roles=list(roles),
+        )
+        response = RedirectResponse(next_path, status_code=302)
+        _set_ui_session_cookie(response, session_token, secure_cookies)
+        _clear_ui_login_cookie(response, secure_cookies)
+        return response
 
     @server.custom_route("/ui/tokens", methods=["GET"])
     async def ui_tokens_get(request: Request) -> Response:
-        raw_token = _extract_bearer(request)
-        if raw_token is None:
-            return HTMLResponse(_render_auth_required(), status_code=401)
-
-        result = await _verify_minting_access(raw_token, auth_provider, auth_config)
+        result = _resolve_ui_principal(request, public_key_pem)
         if result is None:
+            return RedirectResponse(
+                f"/ui/login?next={quote('/ui/tokens', safe='')}", status_code=302
+            )
+
+        subject, roles = result
+        if not _has_minting_role(roles, auth_config):
             return HTMLResponse(_render_forbidden(), status_code=403)
 
-        subject, _ = result
         return HTMLResponse(_render_form(subject, available_roles, auth_config.token_max_expiry_days))
-
-    # -----------------------------------------------------------------------
-    # POST /ui/tokens — mint a bot token and display it once
-    # -----------------------------------------------------------------------
 
     @server.custom_route("/ui/tokens", methods=["POST"])
     async def ui_tokens_post(request: Request) -> Response:
-        raw_token = _extract_bearer(request)
-        if raw_token is None:
-            return HTMLResponse(_render_auth_required(), status_code=401)
-
-        result = await _verify_minting_access(raw_token, auth_provider, auth_config)
+        result = _resolve_ui_principal(request, public_key_pem)
         if result is None:
-            return HTMLResponse(_render_forbidden(), status_code=403)
+            return RedirectResponse(
+                f"/ui/login?next={quote('/ui/tokens', safe='')}", status_code=302
+            )
 
-        creator, _ = result
+        creator, roles = result
+        if not _has_minting_role(roles, auth_config):
+            return HTMLResponse(_render_forbidden(), status_code=403)
 
         try:
             form = await request.form()
@@ -117,7 +305,6 @@ def register_ui_routes(
         except ValueError:
             errors.append("Expiry must be a number.")
 
-        # Validate selected roles
         invalid_roles = [r for r in selected_roles if r not in auth_config.roles]
         if invalid_roles:
             errors.append(f"Unknown roles: {', '.join(invalid_roles)}")
@@ -142,19 +329,16 @@ def register_ui_routes(
         )
         return HTMLResponse(_render_token_display(new_token, name))
 
+    @server.custom_route("/ui/logout", methods=["GET"])
+    async def ui_logout(request: Request) -> Response:
+        response = RedirectResponse("/ui/tokens", status_code=302)
+        _clear_ui_session_cookie(response, secure_cookies)
+        return response
+
 
 # ---------------------------------------------------------------------------
 # HTML templates (inline f-strings, no template engine)
 # ---------------------------------------------------------------------------
-
-def _render_auth_required() -> str:
-    return """<!DOCTYPE html>
-<html><head><title>Authentication Required</title></head>
-<body>
-<h1>401 — Authentication Required</h1>
-<p>You must provide a valid Bearer token in the Authorization header.</p>
-</body></html>"""
-
 
 def _render_forbidden() -> str:
     return """<!DOCTYPE html>
@@ -205,6 +389,7 @@ def _render_form(
   <label>Expiry (days, 1–{max_expiry}): <input type="number" name="expiry_days" min="1" max="{max_expiry}" required></label><br><br>
   <button type="submit">Mint Token</button>
 </form>
+<p><a href="/ui/logout">Log out</a></p>
 </body>
 </html>"""
 

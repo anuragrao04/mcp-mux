@@ -4,30 +4,31 @@
 
 The `auth` package adds optional authentication and authorization to mcp-env-mux. When an `auth` block is present in the config, the proxy requires JWT Bearer tokens on all MCP requests and enforces role-based access control per tool/environment. When the `auth` block is absent, the proxy operates without authentication (backward compatible).
 
-> **See `/AUTH_DESIGN.md` at the repo root** for the authoritative design of the auth rework. This file summarizes the resulting module layout.
+> **See `/AUTH_DESIGN.md` at the repo root** for the auth architecture reference. This file summarizes the module layout.
 
 ## Two token types
 
 | Token | Issuer | Used by | Verified by |
 |---|---|---|---|
-| **User** | Microsoft Entra ID | Interactive clients (Claude Code, browsers) | Azure JWKS, via `HybridAzureProvider`'s parent `AzureProvider` |
+| **User** | Microsoft Entra ID | Interactive OAuth/MCP clients; browser login for `/ui/*` | Azure JWKS, via `HybridAzureProvider`'s parent `AzureProvider` and Azure token validation |
 | **Bot** | mcp-env-mux itself (RS256, local key) | Headless agents | Local `JWTVerifier`, via `HybridAzureProvider`'s local-verifier branch |
 
-Both are presented as `Authorization: Bearer <token>`; dispatch is based on the `iss` claim.
+For `/mcp`, both are presented as `Authorization: Bearer <token>` and dispatch is based on the `iss` claim.
+For `/ui/*`, humans authenticate through Azure and receive a short-lived signed UI session cookie.
 
 ## Module Summary
 
-**hybrid.py** — `HybridAzureProvider`. Subclass of `fastmcp.server.auth.providers.azure.AzureProvider`. Inherits the full Azure OAuth flow (DCR proxy, login, callback, token endpoint, all `/.well-known/*` discovery routes, JWKS-based JWT verification). Adds a `verify_token` override that routes tokens whose `iss == "mcp-env-mux"` to a local `JWTVerifier` configured with the bot-signing public key.
+**hybrid.py** — `HybridAzureProvider`. Subclass of `fastmcp.server.auth.providers.azure.AzureProvider`. Inherits the full Azure OAuth flow (DCR proxy, login, callback, token endpoint, all `/.well-known/*` discovery routes, JWKS-based JWT verification). Adds a `verify_token` override that routes tokens whose `iss == "mcp-env-mux"` to a local `JWTVerifier` configured with the bot-signing public key. Also exposes UI helpers for starting and completing the browser login flow used by `/ui/login` and `/ui/callback`, including provider transaction storage, Azure authorize URL construction, token exchange, and Azure claim extraction.
 
 **keys.py** — RSA key management. Loads an existing PEM private key from disk or generates a new 2048-bit key. Used for **bot tokens only**.
 
-**tokens.py** — JWT creation for **bot tokens only**. RS256-signed long-lived JWTs (configurable days, minted via UI). User tokens are issued by Azure directly — no longer minted here.
+**tokens.py** — JWT creation for **bot tokens only**. RS256-signed long-lived JWTs (configurable days, minted via UI). User tokens are issued by Azure.
 
 **rbac.py** — Permission logic. Pure function `is_allowed` checks user roles against configured `allowed_envs` patterns using `fnmatch` glob matching. Multi-role permissions are unioned; no deny rules.
 
 **middleware.py** — FastMCP middleware. Intercepts every `call_tool` request, reads roles from `get_access_token().claims["roles"]`, and calls `rbac.is_allowed`. Raises `ToolError` on denial. Passes through if the tool has no `env` parameter.
 
-**ui.py** — Token minting UI. HTML routes at `/ui/tokens` (GET form, POST mint) for creating bot tokens. Verifies the caller's bearer via the `HybridAzureProvider` (so admins can access the UI using their Azure session) and checks for a minting role.
+**ui.py** — Token minting UI. HTML routes at `/ui/login`, `/ui/callback`, `/ui/tokens`, and `/ui/logout`. Humans authenticate through Azure and the app establishes a short-lived signed UI login/session flow for browser use. `ui.py` handles browser-specific concerns: safe `next` handling, a short-lived signed UI login cookie, a short-lived signed UI session cookie, logout, and minting-role checks.
 
 ## Data Flow
 
@@ -53,10 +54,12 @@ Bot (headless)
 
 Admin minting a bot token
   |
+  |-- /ui/login -> Azure authorize
+  |-- /ui/callback -> exchange Azure code, validate claims, set UI session cookie
   |-- /ui/tokens
-  |     Authorization: Bearer <user or admin-bot token>
-  |     -> ui._verify_minting_access calls hybrid.verify_token
-  |     -> if claims.roles ∩ token_minting_roles is non-empty: render form / mint
+  |     cookie: mcp_env_mux_ui_session=<signed session>
+  |     -> ui resolves subject + roles from signed UI session
+  |     -> if roles ∩ token_minting_roles is non-empty: render form / mint
   |     -> tokens.create_bot_token (RS256 with local private key)
 ```
 
@@ -82,6 +85,7 @@ Admin minting a bot token
 - **No auth config** — All requests pass through. No middleware, no provider attached.
 - **Missing/invalid Bearer** — HTTP 401 from FastMCP (the auth provider rejects).
 - **Valid token, insufficient role** — `ToolError` raised by `RBACMiddleware`.
-- **UI: missing/invalid Bearer** — HTTP 401 from `ui.py`.
-- **UI: valid token, no minting role** — HTTP 403 from `ui.py`.
+- **UI: no valid session** — redirect to `/ui/login` from `ui.py`.
+- **UI: callback state/code failure** — HTTP 400/500 HTML error page from `ui.py`.
+- **UI: valid session, no minting role** — HTTP 403 from `ui.py`.
 - **UI: form validation** — HTTP 400 with errors re-rendered inline.
