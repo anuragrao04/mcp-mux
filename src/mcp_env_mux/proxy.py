@@ -91,6 +91,21 @@ def create_proxy_server(
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
         ).decode("utf-8")
 
+        auth_kwargs: dict[str, Any] = {}
+        if auth_config.redis.enabled:
+            from cryptography.fernet import Fernet
+            from key_value.aio.stores.redis import RedisStore
+            from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
+
+            auth_kwargs["client_storage"] = FernetEncryptionWrapper(
+                key_value=RedisStore(
+                    host=auth_config.redis.host,
+                    port=auth_config.redis.port,
+                ),
+                fernet=Fernet(auth_config.redis.encryption_key.encode("utf-8")),
+                raise_on_decryption_error=False,
+            )
+
         auth = HybridAzureProvider(
             client_id=auth_config.azure.client_id,
             client_secret=auth_config.azure.client_secret,
@@ -99,6 +114,7 @@ def create_proxy_server(
             required_scopes=auth_config.required_scopes,
             local_public_key_pem=public_key_pem,
             metrics=metrics,
+            **auth_kwargs,
         )
         server = FastMCP("mcp-env-mux", auth=auth)
 

@@ -105,7 +105,15 @@ Header values and selected auth values support `$VAR` substitution -- any value 
       "client_id": "your-client-id",
       "client_secret": "$AZURE_CLIENT_SECRET"
     },
+    "base_url": "https://mux.example.com",
+    "required_scopes": ["access_as_user"],
     "signing_key_file": ".keys/mcp-env-mux.pem",
+    "redis": {
+      "enabled": true,
+      "host": "${REDIS_HOST}",
+      "port": 6379,
+      "encryption_key": "${REDIS_ENCRYPTION_KEY}"
+    },
     "roles": {
       "admin": {
         "allowed_envs": {
@@ -157,7 +165,14 @@ Auth fields:
 - `azure.tenant_id` (required) -- Azure tenant ID.
 - `azure.client_id` (required) -- Azure app client ID.
 - `azure.client_secret` (required) -- Azure app client secret. Supports `$ENV_VAR` substitution.
+- `base_url` (required) -- Public base URL used for OAuth and UI callback routes.
+- `required_scopes` (required) -- Azure scopes required for user tokens.
 - `signing_key_file` (required) -- Path to the RSA private key used to sign local JWTs. Resolution order: if the file exists it is loaded; otherwise, if `MCP_ENV_MUX_SIGNING_KEY_PEM` is set, that PEM content is written to this path and loaded; otherwise a new key is generated on first start and written here.
+- `redis` (optional) -- Shared OAuth state storage configuration.
+- `redis.enabled` (optional, default `false`) -- When `true`, store OAuth proxy state in Redis for horizontal scaling. When `false` or omitted, FastMCP uses its default local encrypted file-backed storage.
+- `redis.host` (optional, default `localhost`) -- Redis host.
+- `redis.port` (optional, default `6379`) -- Redis port.
+- `redis.encryption_key` (required when `redis.enabled` is `true`) -- Fernet key used to encrypt OAuth state before writing to Redis. This value comes from the config file contract; if you use environment variables, interpolate them into the config file value. It must be a valid Fernet key: a URL-safe base64-encoded 32-byte key.
 - `roles` (required) -- Map of role name to RBAC config.
 - `roles.<role>.allowed_envs` -- Map of environment glob pattern to list of tool glob patterns.
 - `token_minting_roles` (required) -- Roles allowed to access the token minting UI.
@@ -188,6 +203,17 @@ This matters for multi-replica deployments behind a load balancer:
 - per-user tool visibility is derived from the presented token and in-memory merged tool metadata, not from sticky server-side MCP session state
 
 Each replica still performs backend discovery at startup and keeps its own backend client connections, so replicas should be started with the same config and auth/signing setup.
+
+For OAuth across replicas, enable `auth.redis.enabled` and point all replicas at the same Redis instance. FastMCP stores OAuth transactions, authorization codes, client registrations, and token metadata in `client_storage`; without shared storage, multi-step OAuth flows can fail when a load balancer sends different steps to different replicas. All replicas must also use the same `auth.redis.encryption_key`, or they will be unable to decrypt each other's stored OAuth state.
+
+You can generate a Fernet key from the terminal with Python:
+
+```bash
+uv run python - <<'PY'
+from cryptography.fernet import Fernet
+print(Fernet.generate_key().decode())
+PY
+```
 
 ## CLI Reference
 

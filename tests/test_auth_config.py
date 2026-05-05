@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_env_mux.config import AuthConfig, AzureConfig, Config, RoleConfig, load_config
+from mcp_env_mux.config import AuthConfig, AzureConfig, Config, RedisAuthConfig, RoleConfig, load_config
 
 
 # ---------------------------------------------------------------------------
@@ -25,6 +25,8 @@ _BASE_ENVS = {
         "prod": {"description": "Production", "url": "http://localhost:9000/mcp"}
     }
 }
+
+_VALID_REDIS_KEY = "oGxj4kV8P1A1M6h1h7JtI6Rr8J8e2mQq5m7Q2f4f4mI="
 
 _VALID_AUTH = {
     "azure": {
@@ -121,6 +123,32 @@ class TestValidAuthConfig:
         config = load_config(_write_config(tmp_path, data))
         assert config.auth.token_max_expiry_days == 30
 
+    def test_redis_defaults(self, tmp_path):
+        data = {**_BASE_ENVS, "auth": _VALID_AUTH}
+        config = load_config(_write_config(tmp_path, data))
+        assert isinstance(config.auth.redis, RedisAuthConfig)
+        assert config.auth.redis.enabled is False
+        assert config.auth.redis.host == "localhost"
+        assert config.auth.redis.port == 6379
+        assert config.auth.redis.encryption_key is None
+
+    def test_redis_config_parsed(self, tmp_path):
+        auth = {
+            **_VALID_AUTH,
+            "redis": {
+                "enabled": True,
+                "host": "redis.internal",
+                "port": 6380,
+                "encryption_key": _VALID_REDIS_KEY,
+            },
+        }
+        data = {**_BASE_ENVS, "auth": auth}
+        config = load_config(_write_config(tmp_path, data))
+        assert config.auth.redis.enabled is True
+        assert config.auth.redis.host == "redis.internal"
+        assert config.auth.redis.port == 6380
+        assert config.auth.redis.encryption_key == _VALID_REDIS_KEY
+
 
 # ---------------------------------------------------------------------------
 # ${ENV_VAR} substitution in auth strings
@@ -144,6 +172,8 @@ class TestAuthEnvVarSubstitution:
         monkeypatch.setenv("SCOPE", "scope-from-env")
         monkeypatch.setenv("KEY_FILE", "/tmp/from-env.pem")
         monkeypatch.setenv("ROLE", "admin")
+        monkeypatch.setenv("REDIS_HOST", "redis-from-env")
+        monkeypatch.setenv("REDIS_KEY", _VALID_REDIS_KEY)
         auth = {
             **_VALID_AUTH,
             "azure": {
@@ -155,6 +185,12 @@ class TestAuthEnvVarSubstitution:
             "required_scopes": ["${SCOPE}"],
             "signing_key_file": "${KEY_FILE}",
             "token_minting_roles": ["${ROLE}"],
+            "redis": {
+                "enabled": True,
+                "host": "${REDIS_HOST}",
+                "port": 6381,
+                "encryption_key": "${REDIS_KEY}"
+            },
         }
         data = {**_BASE_ENVS, "auth": auth}
         config = load_config(_write_config(tmp_path, data))
@@ -164,6 +200,10 @@ class TestAuthEnvVarSubstitution:
         assert config.auth.required_scopes == ["scope-from-env"]
         assert config.auth.signing_key_file == "/tmp/from-env.pem"
         assert config.auth.token_minting_roles == ["admin"]
+        assert config.auth.redis.enabled is True
+        assert config.auth.redis.host == "redis-from-env"
+        assert config.auth.redis.port == 6381
+        assert config.auth.redis.encryption_key == _VALID_REDIS_KEY
 
     def test_bare_dollar_var_in_auth_remains_literal(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MY_SECRET", "resolved-value")
@@ -231,6 +271,44 @@ class TestMissingAuthFields:
 # ---------------------------------------------------------------------------
 # required_scopes type/non-empty validation
 # ---------------------------------------------------------------------------
+
+class TestRedisValidation:
+    def test_non_object_redis_raises(self, tmp_path):
+        auth = {**_VALID_AUTH, "redis": True}
+        with pytest.raises(ValueError, match="auth.redis"):
+            load_config(_write_config(tmp_path, {**_BASE_ENVS, "auth": auth}))
+
+    def test_invalid_redis_host_raises(self, tmp_path):
+        auth = {**_VALID_AUTH, "redis": {"enabled": True, "host": "", "port": 6379}}
+        with pytest.raises(ValueError, match="auth.redis.host"):
+            load_config(_write_config(tmp_path, {**_BASE_ENVS, "auth": auth}))
+
+    def test_invalid_redis_port_raises(self, tmp_path):
+        auth = {**_VALID_AUTH, "redis": {"enabled": True, "host": "localhost", "port": "6379"}}
+        with pytest.raises(ValueError, match="auth.redis.port"):
+            load_config(_write_config(tmp_path, {**_BASE_ENVS, "auth": auth}))
+
+    def test_missing_redis_encryption_key_raises_when_enabled(self, tmp_path):
+        auth = {**_VALID_AUTH, "redis": {"enabled": True, "host": "localhost", "port": 6379}}
+        with pytest.raises(ValueError, match="auth.redis.encryption_key"):
+            load_config(_write_config(tmp_path, {**_BASE_ENVS, "auth": auth}))
+
+    def test_invalid_redis_encryption_key_type_raises(self, tmp_path):
+        auth = {
+            **_VALID_AUTH,
+            "redis": {"enabled": True, "host": "localhost", "port": 6379, "encryption_key": 123},
+        }
+        with pytest.raises(ValueError, match="auth.redis.encryption_key"):
+            load_config(_write_config(tmp_path, {**_BASE_ENVS, "auth": auth}))
+
+    def test_invalid_redis_encryption_key_value_raises(self, tmp_path):
+        auth = {
+            **_VALID_AUTH,
+            "redis": {"enabled": True, "host": "localhost", "port": 6379, "encryption_key": "not-a-valid-fernet-key"},
+        }
+        with pytest.raises(ValueError, match="valid Fernet key"):
+            load_config(_write_config(tmp_path, {**_BASE_ENVS, "auth": auth}))
+
 
 class TestRequiredScopesValidation:
     def test_empty_list_raises(self, tmp_path):

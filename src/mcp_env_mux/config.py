@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cryptography.fernet import Fernet
+
 from mcp_env_mux.metrics.config import MetricsConfig
 
 
@@ -31,6 +33,14 @@ class RoleConfig:
 
 
 @dataclass
+class RedisAuthConfig:
+    enabled: bool = False
+    host: str = "localhost"
+    port: int = 6379
+    encryption_key: str | None = None
+
+
+@dataclass
 class AuthConfig:
     azure: AzureConfig
     base_url: str
@@ -39,6 +49,7 @@ class AuthConfig:
     roles: dict[str, RoleConfig]
     token_minting_roles: list[str]
     token_max_expiry_days: int = 180
+    redis: RedisAuthConfig = field(default_factory=RedisAuthConfig)
 
 
 @dataclass
@@ -134,6 +145,30 @@ def _parse_auth_config(auth_raw: dict) -> AuthConfig:
     if token_minting_roles is None:
         raise ValueError("auth.token_minting_roles is required")
 
+    redis_raw = auth_raw.get("redis", {})
+    if not isinstance(redis_raw, dict):
+        raise ValueError("auth.redis must be an object")
+    redis_enabled = bool(redis_raw.get("enabled", False))
+    redis_host = redis_raw.get("host", "localhost")
+    redis_port = redis_raw.get("port", 6379)
+    if not isinstance(redis_host, str) or not redis_host:
+        raise ValueError("auth.redis.host must be a non-empty string")
+    if not isinstance(redis_port, int):
+        raise ValueError("auth.redis.port must be an integer")
+    redis_encryption_key = redis_raw.get("encryption_key")
+    if redis_encryption_key is not None and not isinstance(redis_encryption_key, str):
+        raise ValueError("auth.redis.encryption_key must be a string")
+    if redis_enabled and (not redis_encryption_key or not redis_encryption_key.strip()):
+        raise ValueError("auth.redis.encryption_key is required when auth.redis.enabled is true")
+    if redis_encryption_key is not None:
+        try:
+            Fernet(redis_encryption_key.encode("utf-8"))
+        except Exception as e:
+            raise ValueError(
+                "auth.redis.encryption_key must be a valid Fernet key "
+                "(URL-safe base64-encoded 32-byte key)"
+            ) from e
+
     return AuthConfig(
         azure=azure,
         base_url=base_url,
@@ -142,6 +177,12 @@ def _parse_auth_config(auth_raw: dict) -> AuthConfig:
         roles=roles,
         token_minting_roles=token_minting_roles,
         token_max_expiry_days=auth_raw.get("token_max_expiry_days", 180),
+        redis=RedisAuthConfig(
+            enabled=redis_enabled,
+            host=redis_host,
+            port=redis_port,
+            encryption_key=redis_encryption_key,
+        ),
     )
 
 
