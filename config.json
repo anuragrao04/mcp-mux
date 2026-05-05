@@ -39,7 +39,7 @@
     "token_minting_roles": ["admin"],
     "token_max_expiry_days": 180,
     "redis": {
-      "enabled": false,
+      "enabled": true,
       "host": "${REDIS_HOST}",
       "port": 6379,
       "encryption_key": "${REDIS_ENCRYPTION_KEY}"

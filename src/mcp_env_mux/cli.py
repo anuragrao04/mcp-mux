@@ -8,6 +8,9 @@ import logging
 import sys
 from pathlib import Path
 
+from cryptography.fernet import Fernet
+from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
+
 from mcp_env_mux.config import load_config
 from mcp_env_mux.discovery import discover_all
 from mcp_env_mux.health import ReadinessState
@@ -16,6 +19,63 @@ from mcp_env_mux.merge import validate_and_merge
 from mcp_env_mux.metrics import create_metrics
 from mcp_env_mux.metrics.startup import record_startup_state
 from mcp_env_mux.proxy import create_proxy_server
+
+
+async def _verify_redis_connection(config, logger: logging.Logger, readiness: ReadinessState) -> None:
+    if config.auth is None or not config.auth.redis.enabled:
+        readiness.redis_enabled = False
+        readiness.redis_verified = False
+        readiness.redis_host = None
+        readiness.redis_port = None
+        return
+
+    try:
+        from key_value.aio.stores.redis import RedisStore
+    except ImportError as e:
+        raise RuntimeError(
+            "Redis-backed auth storage is enabled in config, but Redis support is not "
+            "installed in this mcp-env-mux build."
+        ) from e
+
+    readiness.redis_enabled = True
+    readiness.redis_verified = False
+    readiness.redis_host = config.auth.redis.host
+    readiness.redis_port = config.auth.redis.port
+
+    logger.info(
+        "verifying_redis_connection",
+        extra={
+            "host": config.auth.redis.host,
+            "port": config.auth.redis.port,
+        },
+    )
+
+    store = FernetEncryptionWrapper(
+        key_value=RedisStore(
+            host=config.auth.redis.host,
+            port=config.auth.redis.port,
+        ),
+        fernet=Fernet(config.auth.redis.encryption_key.encode("utf-8")),
+        raise_on_decryption_error=False,
+    )
+
+    key = "startup-check"
+    value = {"status": "ok"}
+    await store.put(key=key, value=value, collection="mcp-env-mux-startup", ttl=30)
+    stored = await store.get(key=key, collection="mcp-env-mux-startup")
+    if stored != value:
+        raise RuntimeError("Redis startup verification failed: read-after-write mismatch")
+    await store.delete(key=key, collection="mcp-env-mux-startup")
+
+    readiness.redis_verified = True
+
+    logger.info(
+        "redis_connection_verified",
+        extra={
+            "host": config.auth.redis.host,
+            "port": config.auth.redis.port,
+        },
+    )
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -33,6 +93,8 @@ async def _run(args: argparse.Namespace) -> int:
 
         private_key = load_or_generate_key(config.auth.signing_key_file)
         public_key = get_public_key(private_key)
+
+    await _verify_redis_connection(config, logger, readiness)
 
     logger.info("discovering_backends", extra={"environment_count": len(config.environments)})
     discovered = await discover_all(config, metrics=metrics)

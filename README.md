@@ -173,6 +173,7 @@ Auth fields:
 - `redis.host` (optional, default `localhost`) -- Redis host.
 - `redis.port` (optional, default `6379`) -- Redis port.
 - `redis.encryption_key` (required when `redis.enabled` is `true`) -- Fernet key used to encrypt OAuth state before writing to Redis. This value comes from the config file contract; if you use environment variables, interpolate them into the config file value. It must be a valid Fernet key: a URL-safe base64-encoded 32-byte key.
+- Redis runtime support is bundled as a CLI dependency, so enabling Redis in config should work in a normal package install without any extra manual Python package installation.
 - `roles` (required) -- Map of role name to RBAC config.
 - `roles.<role>.allowed_envs` -- Map of environment glob pattern to list of tool glob patterns.
 - `token_minting_roles` (required) -- Roles allowed to access the token minting UI.

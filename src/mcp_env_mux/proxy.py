@@ -94,8 +94,15 @@ def create_proxy_server(
         auth_kwargs: dict[str, Any] = {}
         if auth_config.redis.enabled:
             from cryptography.fernet import Fernet
-            from key_value.aio.stores.redis import RedisStore
             from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
+
+            try:
+                from key_value.aio.stores.redis import RedisStore
+            except ImportError as e:
+                raise RuntimeError(
+                    "Redis-backed auth storage is enabled in config, but Redis support is not "
+                    "installed in this mcp-env-mux build. Install the CLI with Redis extras enabled."
+                ) from e
 
             auth_kwargs["client_storage"] = FernetEncryptionWrapper(
                 key_value=RedisStore(

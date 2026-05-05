@@ -36,5 +36,11 @@ async def test_healthz_and_readyz_return_success_after_startup(tmp_path):
             assert body["status"] == "ready"
             assert body["environment_count"] == 1
             assert body["merged_tool_count"] == 1
+            assert body["redis"] == {
+                "enabled": False,
+                "verified": False,
+                "host": None,
+                "port": None,
+            }
     finally:
         proxy.stop()

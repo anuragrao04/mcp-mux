@@ -13,6 +13,10 @@ class ReadinessState:
     reason: str = "startup_incomplete"
     environment_count: int = 0
     merged_tool_count: int = 0
+    redis_enabled: bool = False
+    redis_verified: bool = False
+    redis_host: str | None = None
+    redis_port: int | None = None
 
 
 def register_health_routes(server: FastMCP, readiness: ReadinessState) -> None:
@@ -28,12 +32,24 @@ def register_health_routes(server: FastMCP, readiness: ReadinessState) -> None:
                     "status": "ready",
                     "environment_count": readiness.environment_count,
                     "merged_tool_count": readiness.merged_tool_count,
+                    "redis": {
+                        "enabled": readiness.redis_enabled,
+                        "verified": readiness.redis_verified,
+                        "host": readiness.redis_host,
+                        "port": readiness.redis_port,
+                    },
                 }
             )
         return JSONResponse(
             {
                 "status": "not_ready",
                 "reason": readiness.reason,
+                "redis": {
+                    "enabled": readiness.redis_enabled,
+                    "verified": readiness.redis_verified,
+                    "host": readiness.redis_host,
+                    "port": readiness.redis_port,
+                },
             },
             status_code=503,
         )
